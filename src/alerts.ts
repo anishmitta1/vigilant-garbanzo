@@ -84,6 +84,31 @@ export function describeTargets(matches: TargetMatch[]): string {
   return matches.map((m) => (m.direction ? `${m.name} ${ARROWS[m.direction]}` : m.name)).join(", ");
 }
 
+const MARKS = { strengthens: "▲", weakens: "▼", mixed: "◆" } as const;
+
+/** Trades hit, with direction, e.g. "▲ AI infra buildout". Falls back to themes/entities when no trade matched. */
+export function directionLine(matches: TargetMatch[]): string {
+  const trades = matches.filter((m) => m.targetKey.startsWith("trade:"));
+  return (trades.length > 0 ? trades : matches).map((m) => `${m.direction ? MARKS[m.direction] : "•"} ${m.name}`).join("   ");
+}
+
+/** Google News titles end in " - Outlet"; split that off so the push names the real publisher. */
+export function splitOutlet(title: string, source: Pick<Source, "name" | "type">): { title: string; outlet: string } {
+  const m = /^(.*\S)\s+-\s+([^-]{2,60})$/.exec(title);
+  return source.type === "google-news" && m ? { title: m[1]!, outlet: m[2]! } : { title, outlet: source.name };
+}
+
+const etClock = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
+
+/** e.g. "3:57 PM ET (9m ago)" */
+export function publishedLine(publishedAt: string | null, now: Date = new Date()): string | null {
+  const at = publishedAt ? new Date(publishedAt) : null;
+  if (!at || Number.isNaN(at.getTime())) return null;
+  const mins = Math.max(0, Math.round((now.getTime() - at.getTime()) / 60_000));
+  const ago = mins < 60 ? `${mins}m` : mins < 48 * 60 ? `${Math.round(mins / 60)}h` : `${Math.round(mins / 1440)}d`;
+  return `${etClock.format(at)} ET (${ago} ago)`;
+}
+
 export async function deliverWebhook(url: string, payload: AlertPayload, fetchImpl: typeof fetch = fetch): Promise<void> {
   const res = await fetchImpl(url, {
     method: "POST",
@@ -133,17 +158,22 @@ export function barkLevel(alert: Pick<Alert, "reason" | "score">): "timeSensitiv
  * Push an alert to an iPhone via Bark (https://bark.day.app). `barkUrl` is the
  * device URL shown in the Bark app, e.g. https://api.day.app/<device key>.
  */
-export async function deliverBark(barkUrl: string, payload: AlertPayload, fetchImpl: typeof fetch = fetch): Promise<void> {
+export async function deliverBark(
+  barkUrl: string,
+  payload: AlertPayload,
+  fetchImpl: typeof fetch = fetch,
+  now: Date = new Date(),
+): Promise<void> {
   const { alert, observation, judgment, source } = payload;
-  const targets = describeTargets(judgment.matches);
-  const headline = alert.reason === "direct" ? "Direct" : "Accumulated weak signals";
+  const { title, outlet } = splitOutlet(observation.title, source);
+  const footer = [outlet, publishedLine(observation.publishedAt, now)].filter(Boolean).join(" · ");
   const res = await fetchImpl(barkUrl.replace(/\/+$/, ""), {
     method: "POST",
     headers: { "Content-Type": "application/json; charset=utf-8" },
     body: JSON.stringify({
-      title: observation.title.slice(0, 250),
-      subtitle: `${headline} (${alert.score}) · ${targets}`,
-      body: [judgment.rationale, `via ${source.name}`].filter(Boolean).join("\n"),
+      title: title.slice(0, 250),
+      subtitle: `${alert.reason === "accumulated" ? "Building: " : ""}${directionLine(judgment.matches)}`,
+      body: [judgment.rationale, footer].filter(Boolean).join("\n"),
       level: barkLevel(alert),
       group: "Mimir",
       ...(observation.url ? { url: observation.url } : {}),
