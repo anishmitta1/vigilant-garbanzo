@@ -1,0 +1,22 @@
+[Unit]
+Description=Mimir investor event intelligence
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mimir
+Group=mimir
+WorkingDirectory=/opt/mimir/current
+EnvironmentFile=/etc/mimir.env
+ExecStart=/opt/node/bin/node dist/index.js
+Restart=always
+RestartSec=5
+MemoryMax=400M
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mimir
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

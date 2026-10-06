@@ -146,3 +146,9 @@ curl -X POST localhost:3000/entities -H 'content-type: application/json' \
 curl -X POST localhost:3000/sources -H 'content-type: application/json' \
   -d '{"type":"google-news","name":"Nvidia news","config":{"query":"Nvidia when:1d"}}'
 ```
+
+## CI/CD
+
+- **CI:** `.github/workflows/ci.yml` runs lint, typecheck, tests and build on every PR and push to `main`.
+- **CD (pull-based):** the server deploys itself. `mimir-deploy.timer` runs [`deploy/deploy.sh`](deploy/deploy.sh) every 2 minutes; when `main` has a new commit it clones it into `/opt/mimir/releases/<sha>`, runs `npm ci`, tests and build as the `mimir` user, points `/opt/mimir/current` at it, restarts `mimir.service`, and rolls back if `/health` doesn't come up. A failing commit is marked `<sha>.failed` and not retried. No deploy credentials live in GitHub.
+- **Server layout:** Node in `/opt/node`, env in `/etc/mimir.env`, SQLite in `/var/lib/mimir`, units in [`deploy/`](deploy/). Logs: `journalctl -u mimir -u mimir-deploy`.
