@@ -122,8 +122,7 @@ export async function processItems(
     if (ntfy) channels.push(() => deliverNtfy(ntfy, payload, deps.fetch));
     const barkWorthy =
       alert.reason === "direct" &&
-      alert.score >= (deps.barkMinScore ?? 0) &&
-      (!deps.barkRequiresMaterial || judgment.material === true);
+      (deps.barkRequiresMaterial ? judgment.material === true : alert.score >= (deps.barkMinScore ?? 0));
     if (barkUrl && barkWorthy) {
       channels.push(() => deliverBark(barkUrl, payload, deps.fetch));
     }
@@ -178,7 +177,7 @@ export async function runDueSources(deps: PipelineDeps, defaultIntervalSeconds: 
 
 async function coolingDown(store: Store, decision: AlertDecision, policy: PipelineDeps["policy"]): Promise<boolean> {
   const { alertCooldownHours, cooldownBypassScore } = policy;
-  if (!alertCooldownHours || !decision.targetKey) return false;
+  if (!alertCooldownHours || !decision.targetKey || decision.material) return false;
   if (decision.reason === "direct" && cooldownBypassScore !== undefined && decision.score >= cooldownBypassScore) return false;
   const last = await store.lastAlertAt(decision.targetKey);
   return last !== null && Date.parse(last) > Date.now() - alertCooldownHours * 3600_000;

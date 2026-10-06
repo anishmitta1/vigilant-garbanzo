@@ -45,7 +45,7 @@ describe("llm scorer", () => {
     expect(j).toMatchObject({
       scorer: "llm:test-model",
       eventType: "guidance_change",
-      consequence: 0.45,
+      consequence: 0.9,
       urgency: 0.7,
       matches: [{ targetKey: "entity:e1", name: "NVDA", strength: 1 }],
     });
@@ -112,5 +112,21 @@ describe("llm gating", () => {
     expect(second.scorer).toBe("heuristic");
     expect(second.material).toBeUndefined();
     expect(second.rationale).toContain("daily cap");
+  });
+});
+
+describe("llm request options", () => {
+  const ok = () => completion({ material: false, event_type: "other", consequence: 0.1, urgency: 0.1, matched_targets: [], rationale: "r" });
+  it("sends reasoning and max_tokens when configured", async () => {
+    const { calls, fetchImpl } = fakeLlm(ok);
+    await createLlmScorer({ ...llm, reasoning: "off", maxTokens: 800 }, fetchImpl).judge(obs, source, watchlist);
+    const body = JSON.parse(calls[0]?.init.body as string);
+    expect(body.reasoning).toEqual({ enabled: false });
+    expect(body.max_tokens).toBe(800);
+  });
+  it("passes an effort level through", async () => {
+    const { calls, fetchImpl } = fakeLlm(ok);
+    await createLlmScorer({ ...llm, reasoning: "low" }, fetchImpl).judge(obs, source, watchlist);
+    expect(JSON.parse(calls[0]?.init.body as string).reasoning).toEqual({ effort: "low" });
   });
 });

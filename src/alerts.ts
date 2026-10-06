@@ -6,12 +6,15 @@ export interface AlertPolicy {
   alertThreshold: number;
   weakSignalFloor: number;
   accumulationThreshold: number;
+  /** LLM judgments alert directly iff material=true and consequence >= this; they never accumulate. */
+  materialMinScore?: number;
 }
 
 export interface AlertDecision {
   reason: AlertReason;
   score: number;
   targetKey: string | null;
+  material?: boolean;
 }
 
 /**
@@ -33,11 +36,15 @@ export function accumulatingMatches(judgment: Pick<Judgment, "eventType" | "matc
 }
 
 export function decideAlert(
-  judgment: Pick<Judgment, "consequence" | "matches" | "eventType">,
+  judgment: Pick<Judgment, "consequence" | "matches" | "eventType" | "material">,
   priorWeakSums: Map<string, number>,
   policy: AlertPolicy,
 ): AlertDecision | null {
   if (judgment.matches.length === 0) return null;
+  if (judgment.material !== undefined) {
+    if (!judgment.material || judgment.consequence < (policy.materialMinScore ?? 0.5)) return null;
+    return { reason: "direct", score: judgment.consequence, targetKey: judgment.matches[0]?.targetKey ?? null, material: true };
+  }
   if (judgment.consequence >= policy.alertThreshold) {
     return { reason: "direct", score: judgment.consequence, targetKey: judgment.matches[0]?.targetKey ?? null };
   }

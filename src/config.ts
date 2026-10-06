@@ -23,9 +23,10 @@ export interface Config {
   maxAlertAgeHours: number;
   alertCooldownHours: number;
   cooldownBypassScore: number;
+  materialMinScore: number;
   storyWindowHours: number;
   seedDefaults: boolean;
-  llm?: { apiKey: string; baseUrl: string; model: string; maxCallsPerDay?: number };
+  llm?: { apiKey: string; baseUrl: string; model: string; maxCallsPerDay?: number; reasoning?: string; maxTokens?: number };
 }
 
 function num(value: string | undefined, fallback: number): number {
@@ -63,14 +64,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxAlertAgeHours: num(env.MAX_ALERT_AGE_HOURS, 48),
     alertCooldownHours: num(env.ALERT_COOLDOWN_HOURS, 6),
     cooldownBypassScore: num(env.COOLDOWN_BYPASS_SCORE, 0.9),
+    materialMinScore: num(env.MATERIAL_MIN_SCORE, 0.5),
     storyWindowHours: num(env.STORY_WINDOW_HOURS, 48),
     seedDefaults: env.SEED_DEFAULTS !== "false",
     llm: llmKey
       ? {
           apiKey: llmKey,
-          baseUrl: str(env.LLM_BASE_URL) ?? "https://api.openai.com/v1",
-          model: str(env.LLM_MODEL) ?? "gpt-4o-mini",
+          baseUrl: str(env.LLM_BASE_URL) ?? "https://openrouter.ai/api/v1",
+          model: str(env.LLM_MODEL) ?? "deepseek/deepseek-v4.1-flash",
           maxCallsPerDay: num(env.LLM_MAX_CALLS_PER_DAY, 500),
+          reasoning: str(env.LLM_REASONING) ?? "off",
+          maxTokens: num(env.LLM_MAX_TOKENS, 1500),
         }
       : undefined,
   };

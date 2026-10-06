@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { loadConfig } from "../src/config.js";
 import { processItems } from "../src/pipeline.js";
 import { DEFAULT_SOURCES, PRESET_THEMES, PRESET_TRADES } from "../src/presets.js";
@@ -31,6 +31,7 @@ let tp = 0;
 let fp = 0;
 let fn = 0;
 const lines: string[] = [];
+const dump: Record<string, unknown>[] = [];
 for (const c of cases) {
   const store = await memoryStore();
   for (const t of PRESET_THEMES) await store.createTheme({ ...t, preset: true });
@@ -56,9 +57,14 @@ for (const c of cases) {
   if (push && c.label === "noise") fp++;
   if (!push && c.label === "alert") fn++;
   const mark = push ? (c.label === "alert" ? "TP" : "FP") : c.label === "alert" ? "FN" : "  ";
-  if (mark.trim()) lines.push(`${mark} ${push?.score ?? "-"} ${c.synthetic ? "[syn] " : ""}${c.title}`);
+  const [obs] = await store.listObservations(1);
+  const j = obs?.judgment;
+  const detail = process.env.EVAL_VERBOSE && j ? `\n     material=${j.material} consequence=${j.consequence.toFixed(2)} source_weight=${weight} :: ${j.rationale}` : "";
+  dump.push({ title: c.title, label: c.label, synthetic: Boolean(c.synthetic), weight, pushed, material: j?.material, consequence: j?.consequence, rationale: j?.rationale });
+  if (mark.trim()) lines.push(`${mark} ${push?.score ?? "-"} ${c.synthetic ? "[syn] " : ""}${c.title}${detail}`);
 }
 console.log(lines.join("\n"));
+if (process.env.EVAL_DUMP) writeFileSync(process.env.EVAL_DUMP, JSON.stringify(dump, null, 1));
 const precision = tp + fp === 0 ? 1 : tp / (tp + fp);
 const recall = tp / (tp + fn);
 console.log(`\nscorer=${scorer.name} barkMinScore=${minScore} cases=${cases.length}`);

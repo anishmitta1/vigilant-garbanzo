@@ -64,6 +64,10 @@ export function createLlmScorer(llm: NonNullable<Config["llm"]>, fetchImpl: type
           body: JSON.stringify({
             model: llm.model,
             temperature: 0,
+            ...(llm.maxTokens ? { max_tokens: llm.maxTokens } : {}),
+            ...(llm.reasoning
+              ? { reasoning: llm.reasoning === "off" ? { enabled: false } : { effort: llm.reasoning } }
+              : {}),
             response_format: { type: "json_object" },
             messages: [
               { role: "system", content: SYSTEM_PROMPT },
@@ -90,7 +94,7 @@ export function createLlmScorer(llm: NonNullable<Config["llm"]>, fetchImpl: type
         return {
           scorer: this.name,
           eventType: parsed.event_type,
-          consequence: clamp01(parsed.consequence * source.weight),
+          consequence: clamp01(parsed.consequence),
           urgency: clamp01(parsed.urgency),
           matches: parsed.matched_targets
             .filter((k) => nameByKey.has(k))
