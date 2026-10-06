@@ -29,7 +29,7 @@ export interface Config {
   /** Daily Bark digest at this local time ("HH:MM" in `digestTimeZone`); unset disables it. */
   digestTime?: string;
   digestTimeZone: string;
-  llm?: { apiKey: string; baseUrl: string; model: string; maxCallsPerDay?: number; reasoning?: string; maxTokens?: number };
+  llm?: { apiKey: string; baseUrl: string; model: string; reasoning?: string; maxTokens?: number };
 }
 
 function num(value: string | undefined, fallback: number): number {
@@ -94,7 +94,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           apiKey: llmKey,
           baseUrl: str(env.LLM_BASE_URL) ?? "https://openrouter.ai/api/v1",
           model: str(env.LLM_MODEL) ?? "deepseek/deepseek-v4.1-flash",
-          maxCallsPerDay: num(env.LLM_MAX_CALLS_PER_DAY, 500),
           reasoning: str(env.LLM_REASONING) ?? "off",
           maxTokens: num(env.LLM_MAX_TOKENS, 1500),
         }

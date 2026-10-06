@@ -103,16 +103,6 @@ describe("llm gating", () => {
     expect(j.material).toBe(true);
   });
 
-  it("falls back to the heuristic once the daily cap is reached", async () => {
-    const { calls, fetchImpl } = fakeLlm(ok);
-    const scorer = createLlmScorer({ ...llm, maxCallsPerDay: 1 }, fetchImpl);
-    await scorer.judge(obs, source, watchlist);
-    const second = await scorer.judge(obs, source, watchlist);
-    expect(calls).toHaveLength(1);
-    expect(second.scorer).toBe("heuristic");
-    expect(second.material).toBeUndefined();
-    expect(second.rationale).toContain("daily cap");
-  });
 });
 
 describe("llm request options", () => {

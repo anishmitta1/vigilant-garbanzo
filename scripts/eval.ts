@@ -24,7 +24,7 @@ const countingFetch = (async (input: string | URL | Request, init?: RequestInit)
   tokens.completion += body.usage?.completion_tokens ?? 0;
   return res;
 }) as typeof fetch;
-const scorer = config.llm ? createLlmScorer({ ...config.llm, maxCallsPerDay: undefined }, countingFetch) : heuristicScorer;
+const scorer = config.llm ? createLlmScorer(config.llm, countingFetch) : heuristicScorer;
 const minScore = config.barkMinScore;
 
 let tp = 0;
