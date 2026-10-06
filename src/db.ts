@@ -358,7 +358,8 @@ export class Store {
   }
 
   // Judgments
-  async insertJudgment(j: Judgment): Promise<void> {
+  /** `signalAt` dates the per-target rows used for weak-signal accumulation (defaults to now). */
+  async insertJudgment(j: Judgment, signalAt: string = j.createdAt): Promise<void> {
     await this.client.batch(
       [
         {
@@ -378,7 +379,7 @@ export class Store {
         },
         ...j.matches.map((m) => ({
           sql: "INSERT INTO judgment_targets (judgment_id, target_key, consequence, created_at) VALUES (?, ?, ?, ?)",
-          args: [j.id, m.targetKey, j.consequence, j.createdAt],
+          args: [j.id, m.targetKey, j.consequence, signalAt],
         })),
       ],
       "write",

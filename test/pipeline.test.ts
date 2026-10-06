@@ -154,3 +154,18 @@ describe("bark delivery", () => {
     expect(result.alerts[0]).toMatchObject({ delivered: true, deliveryError: null });
   });
 });
+
+describe("stale items", () => {
+  it("stores but does not alert on items older than maxAlertAgeHours", async () => {
+    const { store, source } = await setup();
+    const d = deps(store, { policy: { alertThreshold: 0.6, weakSignalFloor: 0.2, accumulationThreshold: 1.2, accumulationWindowHours: 72, maxAlertAgeHours: 48 } });
+    const old = new Date(Date.now() - 10 * 24 * 3600_000).toISOString();
+    const result = await processItems(d, source, [
+      { externalId: "old", title: "Nvidia raises full-year guidance", url: "https://a.com/old", publishedAt: old },
+      { externalId: "new", title: "Nvidia cuts full-year guidance", url: "https://a.com/new", publishedAt: new Date().toISOString() },
+    ]);
+    expect(result.inserted).toBe(2);
+    expect(result.alerts.map((a) => a.observationId)).toHaveLength(1);
+    expect((await store.listAlerts(10)).length).toBe(1);
+  });
+});

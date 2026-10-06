@@ -11,7 +11,7 @@ import { errorMessage, newId, nowIso } from "./util.js";
 export interface PipelineDeps {
   store: Store;
   scorer: Scorer;
-  policy: AlertPolicy & { accumulationWindowHours: number };
+  policy: AlertPolicy & { accumulationWindowHours: number; maxAlertAgeHours?: number };
   sourceContext: SourceContext;
   webhookUrl?: string;
   ntfy?: NtfyConfig;
@@ -51,6 +51,11 @@ export async function processItems(deps: PipelineDeps, source: Source, items: Ra
     result.inserted++;
 
     const judgment = { ...(await scorer.judge(observation, source, watchlist)), id: newId(), observationId: observation.id, createdAt: nowIso() };
+    // Backlog (e.g. a feed's history on first poll) is stored and scored but never alerts or accumulates.
+    if (isStale(observation.publishedAt, policy.maxAlertAgeHours)) {
+      await store.insertJudgment(judgment, new Date(observation.publishedAt!).toISOString());
+      continue;
+    }
     const priorWeakSums = new Map<string, number>();
     for (const m of judgment.matches) {
       priorWeakSums.set(m.targetKey, await store.weakSignalSum(m.targetKey, since, policy.weakSignalFloor, policy.alertThreshold));
@@ -120,4 +125,10 @@ export async function runDueSources(deps: PipelineDeps, defaultIntervalSeconds: 
     if (isDue(source, defaultIntervalSeconds)) results.push(await runSource(deps, source));
   }
   return results;
+}
+
+function isStale(publishedAt: string | null, maxAgeHours: number | undefined): boolean {
+  if (!publishedAt || !maxAgeHours) return false;
+  const t = Date.parse(publishedAt);
+  return Number.isFinite(t) && t < Date.now() - maxAgeHours * 3600_000;
 }

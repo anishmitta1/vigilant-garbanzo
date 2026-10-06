@@ -18,6 +18,7 @@ export interface Config {
   weakSignalFloor: number;
   accumulationThreshold: number;
   accumulationWindowHours: number;
+  maxAlertAgeHours: number;
   seedDefaults: boolean;
   llm?: { apiKey: string; baseUrl: string; model: string };
 }
@@ -52,6 +53,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     weakSignalFloor: num(env.WEAK_SIGNAL_FLOOR, 0.2),
     accumulationThreshold: num(env.ACCUMULATION_THRESHOLD, 1.2),
     accumulationWindowHours: num(env.ACCUMULATION_WINDOW_HOURS, 72),
+    maxAlertAgeHours: num(env.MAX_ALERT_AGE_HOURS, 48),
     seedDefaults: env.SEED_DEFAULTS !== "false",
     llm: llmKey
       ? {
