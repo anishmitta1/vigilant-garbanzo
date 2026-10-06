@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isDue, processItems, runSource } from "../src/pipeline.js";
+import { sameStory } from "../src/preprocess.js";
 import { buildServer } from "../src/server.js";
 import type { Source } from "../src/types.js";
 import { deps, fakeFetch, memoryStore } from "./helpers.js";
@@ -227,5 +228,48 @@ describe("stale items", () => {
     expect(result.inserted).toBe(2);
     expect(result.alerts.map((a) => a.observationId)).toHaveLength(1);
     expect((await store.listAlerts(10)).length).toBe(1);
+  });
+});
+
+describe("bark gating", () => {
+  it("only pushes strong direct alerts to Bark", async () => {
+    const { store, source } = await setup();
+    const titles: string[] = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      titles.push((JSON.parse(String(init.body)) as { title: string }).title);
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    const d = deps(store, { barkUrl: "https://api.day.app/KEY/", barkMinScore: 0.9, fetch: fetchImpl });
+    const result = await processItems(d, source, [
+      { externalId: "1", title: "Nvidia raises full-year guidance" },
+      { externalId: "2", title: "Nvidia files for Chapter 11 bankruptcy" },
+    ]);
+    expect(result.alerts).toHaveLength(2);
+    expect(titles).toEqual(["Nvidia files for Chapter 11 bankruptcy"]);
+  });
+});
+
+describe("story grouping", () => {
+  it("recognises the same story across outlets", () => {
+    expect(
+      sameStory(
+        "Google and Constellation Announce Landmark Agreement to Bring 890 MW of New Nuclear Capacity to PJM Grid - Constellation",
+        "Constellation, Google strike 890 MW nuclear deal for PJM grid - Reuters",
+      ),
+    ).toBe(true);
+    expect(sameStory("Fed cuts rates by 50 basis points - CNBC", "Nvidia raises full-year guidance - CNBC")).toBe(false);
+  });
+
+  it("alerts once per story within the window", async () => {
+    const { store, source } = await setup();
+    const d = deps(store, {
+      policy: { alertThreshold: 0.6, weakSignalFloor: 0.2, accumulationThreshold: 1.2, accumulationWindowHours: 72, storyWindowHours: 48 },
+    });
+    const result = await processItems(d, source, [
+      { externalId: "1", title: "Nvidia files for Chapter 11 bankruptcy - Reuters" },
+      { externalId: "2", title: "Nvidia files for Chapter 11 bankruptcy protection - CNBC" },
+    ]);
+    expect(result.inserted).toBe(2);
+    expect(result.alerts).toHaveLength(1);
   });
 });

@@ -63,3 +63,28 @@ export function normalize(sourceId: string, item: RawItem): NewObservation | nul
     raw: item.raw,
   };
 }
+
+const STORY_STOPWORDS = new Set(
+  "the and for with from that this into over after amid as at by in of on to its it is are was were be has have had will would could says said new how why what who than more most about against".split(" "),
+);
+
+/** Significant lowercase tokens of a headline, without a trailing " - Outlet" suffix (Google News style). */
+export function storyTokens(title: string): Set<string> {
+  const parts = title.split(" - ");
+  const core = parts.length > 1 && parts.at(-1)!.split(/\s+/).length <= 6 ? parts.slice(0, -1).join(" - ") : title;
+  return new Set(
+    core
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}$]+/u)
+      .filter((t) => (t.length >= 3 || /\d/.test(t)) && !STORY_STOPWORDS.has(t)),
+  );
+}
+
+/** Two headlines describe the same story if most of the shorter one's significant tokens appear in the other. */
+export function sameStory(a: string, b: string): boolean {
+  const ta = storyTokens(a);
+  const tb = storyTokens(b);
+  let shared = 0;
+  for (const t of ta) if (tb.has(t)) shared++;
+  return shared >= 3 && shared / Math.min(ta.size, tb.size) >= 0.6;
+}

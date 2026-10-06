@@ -10,7 +10,7 @@ import {
 } from "./alerts.js";
 import type { NtfyConfig } from "./config.js";
 import type { Store } from "./db.js";
-import { normalize } from "./preprocess.js";
+import { normalize, sameStory } from "./preprocess.js";
 import type { Scorer } from "./scoring/types.js";
 import { getAdapter } from "./sources/registry.js";
 import type { SourceContext } from "./sources/types.js";
@@ -27,11 +27,15 @@ export interface PipelineDeps {
     alertCooldownHours?: number;
     /** ...unless a direct alert scores at least this. */
     cooldownBypassScore?: number;
+    /** Skip alerts for a story already alerted on (any outlet) within this window. */
+    storyWindowHours?: number;
   };
   sourceContext: SourceContext;
   webhookUrl?: string;
   ntfy?: NtfyConfig;
   barkUrl?: string;
+  /** Bark is the "drop everything" channel: only direct alerts at or above this score. */
+  barkMinScore?: number;
   slackWebhookUrl?: string;
   fetch?: typeof fetch;
   log?: (msg: string) => void;
@@ -98,6 +102,7 @@ export async function processItems(
     const decision = decideAlert(judgment, priorWeakSums, policy);
     if (!decision) continue;
     if (await coolingDown(store, decision, policy)) continue;
+    if (await alreadyAlertedStory(store, observation.title, policy.storyWindowHours)) continue;
     const alert = await store.insertAlert({
       observationId: observation.id,
       judgmentId: judgment.id,
@@ -113,7 +118,9 @@ export async function processItems(
     const { webhookUrl, ntfy, barkUrl, slackWebhookUrl } = deps;
     if (webhookUrl) channels.push(() => deliverWebhook(webhookUrl, payload, deps.fetch));
     if (ntfy) channels.push(() => deliverNtfy(ntfy, payload, deps.fetch));
-    if (barkUrl) channels.push(() => deliverBark(barkUrl, payload, deps.fetch));
+    if (barkUrl && alert.reason === "direct" && alert.score >= (deps.barkMinScore ?? 0)) {
+      channels.push(() => deliverBark(barkUrl, payload, deps.fetch));
+    }
     if (slackWebhookUrl) channels.push(() => deliverSlack(slackWebhookUrl, payload, deps.fetch));
     if (channels.length > 0) {
       const errors = (await Promise.allSettled(channels.map((send) => send())))
@@ -169,6 +176,12 @@ async function coolingDown(store: Store, decision: AlertDecision, policy: Pipeli
   if (decision.reason === "direct" && cooldownBypassScore !== undefined && decision.score >= cooldownBypassScore) return false;
   const last = await store.lastAlertAt(decision.targetKey);
   return last !== null && Date.parse(last) > Date.now() - alertCooldownHours * 3600_000;
+}
+
+async function alreadyAlertedStory(store: Store, title: string, windowHours: number | undefined): Promise<boolean> {
+  if (!windowHours) return false;
+  const since = new Date(Date.now() - windowHours * 3600_000).toISOString();
+  return (await store.recentAlertTitles(since)).some((t) => sameStory(t, title));
 }
 
 function isStale(publishedAt: string | null, maxAgeHours: number | undefined): boolean {

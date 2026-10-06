@@ -495,6 +495,14 @@ export class Store {
     return alert;
   }
 
+  async recentAlertTitles(since: string): Promise<string[]> {
+    const rows = await this.all(
+      `SELECT o.title FROM alerts a JOIN observations o ON o.id = a.observation_id WHERE a.created_at > ?`,
+      [since],
+    );
+    return rows.map((r) => s(r.title));
+  }
+
   async lastAlertAt(targetKey: string): Promise<string | null> {
     const [row] = await this.all("SELECT MAX(created_at) AS t FROM alerts WHERE target_key = ?", [targetKey]);
     return row?.t ? s(row.t) : null;
