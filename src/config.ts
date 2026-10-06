@@ -12,6 +12,7 @@ export interface Config {
   pollIntervalSeconds: number;
   alertWebhookUrl?: string;
   ntfy?: NtfyConfig;
+  barkUrl?: string;
   alertThreshold: number;
   weakSignalFloor: number;
   accumulationThreshold: number;
@@ -41,6 +42,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     userAgent: str(env.USER_AGENT) ?? "Mimir/0.1 (contact: unset)",
     pollIntervalSeconds: num(env.POLL_INTERVAL_SECONDS, 900),
     alertWebhookUrl: str(env.ALERT_WEBHOOK_URL),
+    barkUrl: str(env.BARK_URL),
     ntfy: ntfyTopic
       ? { url: str(env.NTFY_URL) ?? "https://ntfy.sh", topic: ntfyTopic, token: str(env.NTFY_TOKEN) }
       : undefined,

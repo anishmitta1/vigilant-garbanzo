@@ -132,3 +132,25 @@ describe("ntfy delivery", () => {
     expect(result.alerts[0]).toMatchObject({ delivered: false, deliveryError: "Webhook HTTP 500" });
   });
 });
+
+describe("bark delivery", () => {
+  it("pushes alerts to the Bark device URL", async () => {
+    const { store, source } = await setup();
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ code: 200, message: "success" }));
+    }) as unknown as typeof fetch;
+    const d = deps(store, { barkUrl: "https://api.day.app/KEY/", fetch: fetchImpl });
+    const result = await processItems(d, source, [{ externalId: "1", title: "Nvidia raises full-year guidance", url: "https://a.com/1" }]);
+
+    expect(calls[0]?.url).toBe("https://api.day.app/KEY");
+    expect(JSON.parse(String(calls[0]?.init.body))).toMatchObject({
+      title: "Nvidia raises full-year guidance",
+      level: "timeSensitive",
+      group: "Mimir",
+      url: "https://a.com/1",
+    });
+    expect(result.alerts[0]).toMatchObject({ delivered: true, deliveryError: null });
+  });
+});

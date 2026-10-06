@@ -1,4 +1,4 @@
-import { buildPayload, decideAlert, deliverNtfy, deliverWebhook, type AlertPolicy } from "./alerts.js";
+import { buildPayload, decideAlert, deliverBark, deliverNtfy, deliverWebhook, type AlertPolicy } from "./alerts.js";
 import type { NtfyConfig } from "./config.js";
 import type { Store } from "./db.js";
 import { normalize } from "./preprocess.js";
@@ -15,6 +15,7 @@ export interface PipelineDeps {
   sourceContext: SourceContext;
   webhookUrl?: string;
   ntfy?: NtfyConfig;
+  barkUrl?: string;
   fetch?: typeof fetch;
   log?: (msg: string) => void;
 }
@@ -70,9 +71,10 @@ export async function processItems(deps: PipelineDeps, source: Source, items: Ra
     deps.log?.(`ALERT [${decision.reason} ${decision.score}] ${observation.title}`);
     const payload = buildPayload(alert, observation, judgment, source);
     const channels: (() => Promise<void>)[] = [];
-    const { webhookUrl, ntfy } = deps;
+    const { webhookUrl, ntfy, barkUrl } = deps;
     if (webhookUrl) channels.push(() => deliverWebhook(webhookUrl, payload, deps.fetch));
     if (ntfy) channels.push(() => deliverNtfy(ntfy, payload, deps.fetch));
+    if (barkUrl) channels.push(() => deliverBark(barkUrl, payload, deps.fetch));
     if (channels.length > 0) {
       const errors = (await Promise.allSettled(channels.map((send) => send())))
         .filter((r): r is PromiseRejectedResult => r.status === "rejected")

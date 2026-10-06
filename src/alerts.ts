@@ -96,3 +96,32 @@ export async function deliverNtfy(ntfy: NtfyConfig, payload: AlertPayload, fetch
   });
   if (!res.ok) throw new Error(`ntfy HTTP ${res.status}`);
 }
+
+/** iOS interruption level: time-sensitive (breaks through Focus) for very strong direct alerts. */
+export function barkLevel(alert: Pick<Alert, "reason" | "score">): "timeSensitive" | "active" {
+  return alert.reason === "direct" && alert.score >= 0.85 ? "timeSensitive" : "active";
+}
+
+/**
+ * Push an alert to an iPhone via Bark (https://bark.day.app). `barkUrl` is the
+ * device URL shown in the Bark app, e.g. https://api.day.app/<device key>.
+ */
+export async function deliverBark(barkUrl: string, payload: AlertPayload, fetchImpl: typeof fetch = fetch): Promise<void> {
+  const { alert, observation, judgment, source } = payload;
+  const targets = judgment.matches.map((m) => m.name).join(", ");
+  const headline = alert.reason === "direct" ? "Direct" : "Accumulated weak signals";
+  const res = await fetchImpl(barkUrl.replace(/\/+$/, ""), {
+    method: "POST",
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+    body: JSON.stringify({
+      title: observation.title.slice(0, 250),
+      subtitle: `${headline} (${alert.score}) · ${targets}`,
+      body: [judgment.rationale, `via ${source.name}`].filter(Boolean).join("\n"),
+      level: barkLevel(alert),
+      group: "Mimir",
+      ...(observation.url ? { url: observation.url } : {}),
+    }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) throw new Error(`Bark HTTP ${res.status}`);
+}
