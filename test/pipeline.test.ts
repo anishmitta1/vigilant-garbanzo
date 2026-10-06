@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isDue, processItems, runSource } from "../src/pipeline.js";
+import { sameStory } from "../src/preprocess.js";
 import { buildServer } from "../src/server.js";
 import type { Source } from "../src/types.js";
 import { deps, fakeFetch, memoryStore } from "./helpers.js";
@@ -43,11 +44,11 @@ describe("pipeline", () => {
   it("accumulates weak signals into one alert and then resets", async () => {
     const { store, source } = await setup();
     const d = deps(store, { policy: { alertThreshold: 0.6, weakSignalFloor: 0.2, accumulationThreshold: 1.0, accumulationWindowHours: 72 } });
-    // product events: consequence 0.35 each
-    const titles = ["Nvidia unveils chip A", "Nvidia unveils chip B", "Nvidia unveils chip C", "Nvidia unveils chip D"];
+    // earnings events with the ticker only in the summary: consequence 0.35 each
+    const titles = ["Chip earnings preview A", "Chip earnings preview B", "Chip earnings preview C", "Chip earnings preview D"];
     const results = [];
     for (const [i, title] of titles.entries()) {
-      results.push(await processItems(d, source, [{ externalId: String(i), title }]));
+      results.push(await processItems(d, source, [{ externalId: String(i), title, summary: "What to expect from Nvidia" }]));
     }
     expect(results.map((r) => r.alerts.length)).toEqual([0, 0, 1, 0]);
     expect(results[2]?.alerts[0]).toMatchObject({ reason: "accumulated" });
@@ -94,6 +95,12 @@ describe("http api", () => {
     expect((await app.inject({ url: "/observations?limit=5" })).json()[0].judgment.eventType).toBe("regulation");
     expect((await app.inject({ method: "DELETE", url: `/themes/${theme.json().id}` })).statusCode).toBe(204);
     expect((await app.inject({ method: "DELETE", url: "/themes/missing" })).statusCode).toBe(404);
+
+    const trade = await app.inject({ method: "POST", url: "/trades", payload: { name: "Gold", keywords: ["gold"], strengthens: ["record high"] } });
+    expect(trade.statusCode).toBe(201);
+    expect((await app.inject({ url: "/trades" })).json()).toMatchObject([{ name: "Gold", tickers: [], weakens: [] }]);
+    expect((await app.inject({ method: "POST", url: "/trades", payload: { keywords: ["x"] } })).statusCode).toBe(400);
+    expect((await app.inject({ method: "DELETE", url: `/trades/${trade.json().id}` })).statusCode).toBe(204);
   });
 });
 
@@ -155,6 +162,60 @@ describe("bark delivery", () => {
   });
 });
 
+describe("slack delivery", () => {
+  it("posts trade alerts with direction to a Slack webhook", async () => {
+    const store = await memoryStore();
+    const source = await store.createSource({ type: "push", name: "test", config: {} });
+    await store.createTrade({ name: "AI infra buildout", thesis: "", keywords: ["data center"], tickers: ["MSFT"], strengthens: ["raises capex"], weakens: [] });
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return new Response("ok");
+    }) as unknown as typeof fetch;
+    const d = deps(store, { slackWebhookUrl: "https://hooks.slack.com/services/T/B/X", fetch: fetchImpl });
+    const result = await processItems(d, source, [{ externalId: "1", title: "MSFT raises capex for data center & power", url: "https://a.com/1" }]);
+
+    expect(result.alerts[0]).toMatchObject({ targetKey: expect.stringMatching(/^trade:/), delivered: true });
+    const text = JSON.parse(String(calls[0]?.init.body)).text as string;
+    expect(text).toContain("<https://a.com/1|MSFT raises capex for data center &amp; power>");
+    expect(text).toContain("AI infra buildout ↑ strengthening");
+  });
+});
+
+describe("noise controls", () => {
+  const rss = (titles: string[]) =>
+    `<?xml version="1.0"?><rss><channel>${titles
+      .map((t, i) => `<item><title>${t}</title><link>https://n.com/${encodeURIComponent(t)}</link><guid>${t}</guid><pubDate>${new Date(Date.now() - i * 60_000).toUTCString()}</pubDate></item>`)
+      .join("")}</channel></rss>`;
+
+  it("treats a source's first poll as a silent baseline", async () => {
+    const store = await memoryStore();
+    await store.createEntity({ name: "NVDA", kind: "ticker", aliases: ["Nvidia"] });
+    const source = await store.createSource({ type: "rss", name: "feed", config: { url: "https://n.com/feed" } });
+    const first = await runSource(deps(store, { sourceContext: { fetch: fakeFetch({ "https://n.com": rss(["Nvidia raises full-year guidance"]) }), userAgent: "t" } }), source);
+    expect(first).toMatchObject({ inserted: 1, alerts: [] });
+    const second = await runSource(
+      deps(store, { sourceContext: { fetch: fakeFetch({ "https://n.com": rss(["Nvidia cuts full-year guidance", "Nvidia raises full-year guidance"]) }), userAgent: "t" } }),
+      source,
+    );
+    expect(second).toMatchObject({ inserted: 1 });
+    expect(second.alerts).toHaveLength(1);
+  });
+
+  it("holds repeat alerts on a target during the cooldown unless very strong", async () => {
+    const { store, source } = await setup();
+    const policy = { alertThreshold: 0.6, weakSignalFloor: 0.2, accumulationThreshold: 1.2, accumulationWindowHours: 72, alertCooldownHours: 6, cooldownBypassScore: 0.95 };
+    const d = deps(store, { policy });
+    const result = await processItems(d, source, [
+      { externalId: "1", title: "Nvidia raises full-year guidance" },
+      { externalId: "2", title: "Nvidia cuts full-year guidance again" },
+      { externalId: "3", title: "Nvidia files for Chapter 11 bankruptcy" },
+    ]);
+    expect(result.inserted).toBe(3);
+    expect(result.alerts.map((a) => a.score)).toEqual([0.85, 0.95]);
+  });
+});
+
 describe("stale items", () => {
   it("stores but does not alert on items older than maxAlertAgeHours", async () => {
     const { store, source } = await setup();
@@ -167,5 +228,65 @@ describe("stale items", () => {
     expect(result.inserted).toBe(2);
     expect(result.alerts.map((a) => a.observationId)).toHaveLength(1);
     expect((await store.listAlerts(10)).length).toBe(1);
+  });
+});
+
+describe("bark gating", () => {
+  it("only pushes strong direct alerts to Bark", async () => {
+    const { store, source } = await setup();
+    const titles: string[] = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      titles.push((JSON.parse(String(init.body)) as { title: string }).title);
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    const d = deps(store, { barkUrl: "https://api.day.app/KEY/", barkMinScore: 0.9, fetch: fetchImpl });
+    const result = await processItems(d, source, [
+      { externalId: "1", title: "Nvidia raises full-year guidance" },
+      { externalId: "2", title: "Nvidia files for Chapter 11 bankruptcy" },
+    ]);
+    expect(result.alerts).toHaveLength(2);
+    expect(titles).toEqual(["Nvidia files for Chapter 11 bankruptcy"]);
+  });
+});
+
+describe("bark materiality", () => {
+  it("does not push heuristic judgments to Bark when materiality is required", async () => {
+    const { store, source } = await setup();
+    let pushes = 0;
+    const fetchImpl = (async () => {
+      pushes++;
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    const d = deps(store, { barkUrl: "https://api.day.app/KEY/", barkRequiresMaterial: true, fetch: fetchImpl });
+    const result = await processItems(d, source, [{ externalId: "1", title: "Nvidia files for Chapter 11 bankruptcy" }]);
+    expect(result.alerts).toHaveLength(1);
+    expect(pushes).toBe(0);
+    const [stored] = await store.listAlerts(1);
+    expect(stored?.judgment.material).toBeUndefined();
+  });
+});
+
+describe("story grouping", () => {
+  it("recognises the same story across outlets", () => {
+    expect(
+      sameStory(
+        "Google and Constellation Announce Landmark Agreement to Bring 890 MW of New Nuclear Capacity to PJM Grid - Constellation",
+        "Constellation, Google strike 890 MW nuclear deal for PJM grid - Reuters",
+      ),
+    ).toBe(true);
+    expect(sameStory("Fed cuts rates by 50 basis points - CNBC", "Nvidia raises full-year guidance - CNBC")).toBe(false);
+  });
+
+  it("alerts once per story within the window", async () => {
+    const { store, source } = await setup();
+    const d = deps(store, {
+      policy: { alertThreshold: 0.6, weakSignalFloor: 0.2, accumulationThreshold: 1.2, accumulationWindowHours: 72, storyWindowHours: 48 },
+    });
+    const result = await processItems(d, source, [
+      { externalId: "1", title: "Nvidia files for Chapter 11 bankruptcy - Reuters" },
+      { externalId: "2", title: "Nvidia files for Chapter 11 bankruptcy protection - CNBC" },
+    ]);
+    expect(result.inserted).toBe(2);
+    expect(result.alerts).toHaveLength(1);
   });
 });

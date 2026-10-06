@@ -1,4 +1,5 @@
 import { createClient, type Client, type InValue, type Row } from "@libsql/client";
+import { accumulatingMatches } from "./alerts.js";
 import type {
   Alert,
   AlertReason,
@@ -8,6 +9,7 @@ import type {
   Observation,
   Source,
   Theme,
+  Trade,
 } from "./types.js";
 import { newId, nowIso } from "./util.js";
 
@@ -85,6 +87,17 @@ const MIGRATIONS = [
     created_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS alerts_created ON alerts(created_at)`,
+  `CREATE TABLE IF NOT EXISTS trades (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    thesis TEXT NOT NULL DEFAULT '',
+    keywords TEXT NOT NULL DEFAULT '[]',
+    tickers TEXT NOT NULL DEFAULT '[]',
+    strengthens TEXT NOT NULL DEFAULT '[]',
+    weakens TEXT NOT NULL DEFAULT '[]',
+    preset INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  )`,
 ];
 
 const json = (v: unknown): string => JSON.stringify(v);
@@ -98,6 +111,20 @@ function toTheme(r: Row): Theme {
     name: s(r.name),
     description: s(r.description),
     keywords: parse<string[]>(r.keywords, []),
+    preset: Number(r.preset) === 1,
+    createdAt: s(r.created_at),
+  };
+}
+
+function toTrade(r: Row): Trade {
+  return {
+    id: s(r.id),
+    name: s(r.name),
+    thesis: s(r.thesis),
+    keywords: parse<string[]>(r.keywords, []),
+    tickers: parse<string[]>(r.tickers, []),
+    strengthens: parse<string[]>(r.strengthens, []),
+    weakens: parse<string[]>(r.weakens, []),
     preset: Number(r.preset) === 1,
     createdAt: s(r.created_at),
   };
@@ -153,6 +180,7 @@ function toJudgment(r: Row): Judgment {
     urgency: Number(r.urgency),
     matches: parse(r.matches, []),
     rationale: s(r.rationale),
+    ...(r.material === null || r.material === undefined ? {} : { material: Number(r.material) === 1 }),
     createdAt: s(r.created_at),
   };
 }
@@ -172,6 +200,9 @@ function toAlert(r: Row): Alert {
 }
 
 export type NewTheme = Pick<Theme, "name" | "description" | "keywords"> & { preset?: boolean };
+export type NewTrade = Pick<Trade, "name" | "thesis" | "keywords" | "tickers" | "strengthens" | "weakens"> & {
+  preset?: boolean;
+};
 export type NewEntity = Pick<Entity, "name" | "kind" | "aliases">;
 export type NewSource = Pick<Source, "type" | "name" | "config"> &
   Partial<Pick<Source, "enabled" | "weight" | "pollIntervalSeconds">>;
@@ -183,6 +214,10 @@ export class Store {
   async migrate(): Promise<void> {
     await this.client.execute("PRAGMA foreign_keys = ON");
     for (const sql of MIGRATIONS) await this.client.execute(sql);
+    const judgmentCols = await this.all("PRAGMA table_info(judgments)");
+    if (!judgmentCols.some((c) => c.name === "material")) {
+      await this.client.execute("ALTER TABLE judgments ADD COLUMN material INTEGER");
+    }
   }
 
   private async all(sql: string, args: InValue[] = []): Promise<Row[]> {
@@ -209,6 +244,35 @@ export class Store {
 
   async deleteTheme(id: string): Promise<boolean> {
     return (await this.run("DELETE FROM themes WHERE id = ?", [id])) > 0;
+  }
+
+  // Trades
+  async listTrades(): Promise<Trade[]> {
+    return (await this.all("SELECT * FROM trades ORDER BY created_at")).map(toTrade);
+  }
+
+  async createTrade(t: NewTrade): Promise<Trade> {
+    const trade: Trade = { id: newId(), preset: false, createdAt: nowIso(), ...t };
+    await this.run(
+      `INSERT INTO trades (id, name, thesis, keywords, tickers, strengthens, weakens, preset, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        trade.id,
+        trade.name,
+        trade.thesis,
+        json(trade.keywords),
+        json(trade.tickers),
+        json(trade.strengthens),
+        json(trade.weakens),
+        trade.preset ? 1 : 0,
+        trade.createdAt,
+      ],
+    );
+    return trade;
+  }
+
+  async deleteTrade(id: string): Promise<boolean> {
+    return (await this.run("DELETE FROM trades WHERE id = ?", [id])) > 0;
   }
 
   // Entities
@@ -352,6 +416,10 @@ export class Store {
     return rows.map((r) => ({ ...toObservation(r), judgment: r.j_id ? (judgments.get(s(r.j_id)) ?? null) : null }));
   }
 
+  async hasObservations(sourceId: string): Promise<boolean> {
+    return (await this.all("SELECT 1 FROM observations WHERE source_id = ? LIMIT 1", [sourceId])).length > 0;
+  }
+
   async getObservation(id: string): Promise<Observation | undefined> {
     const [row] = await this.all("SELECT * FROM observations WHERE id = ?", [id]);
     return row ? toObservation(row) : undefined;
@@ -363,8 +431,8 @@ export class Store {
     await this.client.batch(
       [
         {
-          sql: `INSERT INTO judgments (id, observation_id, scorer, event_type, consequence, urgency, matches, rationale, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          sql: `INSERT INTO judgments (id, observation_id, scorer, event_type, consequence, urgency, matches, rationale, material, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           args: [
             j.id,
             j.observationId,
@@ -374,10 +442,11 @@ export class Store {
             j.urgency,
             json(j.matches),
             j.rationale,
+            j.material === undefined ? null : j.material ? 1 : 0,
             j.createdAt,
           ],
         },
-        ...j.matches.map((m) => ({
+        ...accumulatingMatches(j).map((m) => ({
           sql: "INSERT INTO judgment_targets (judgment_id, target_key, consequence, created_at) VALUES (?, ?, ?, ?)",
           args: [j.id, m.targetKey, j.consequence, signalAt],
         })),
@@ -430,6 +499,19 @@ export class Store {
       ],
     );
     return alert;
+  }
+
+  async recentAlertTitles(since: string): Promise<string[]> {
+    const rows = await this.all(
+      `SELECT o.title FROM alerts a JOIN observations o ON o.id = a.observation_id WHERE a.created_at > ?`,
+      [since],
+    );
+    return rows.map((r) => s(r.title));
+  }
+
+  async lastAlertAt(targetKey: string): Promise<string | null> {
+    const [row] = await this.all("SELECT MAX(created_at) AS t FROM alerts WHERE target_key = ?", [targetKey]);
+    return row?.t ? s(row.t) : null;
   }
 
   async markAlertDelivery(id: string, error: string | null): Promise<void> {

@@ -5,6 +5,7 @@ import type { Observation, Source, Watchlist } from "../src/types.js";
 const watchlist: Watchlist = {
   themes: [{ id: "t1", name: "Semis", description: "", keywords: ["semiconductor"], preset: true, createdAt: "" }],
   entities: [{ id: "e1", name: "NVDA", kind: "ticker", aliases: ["Nvidia"], createdAt: "" }],
+  trades: [],
 };
 const source = { id: "s", name: "test", type: "rss", weight: 0.5 } as Source;
 const obs = { id: "o", title: "Nvidia raises full-year guidance", summary: "" } as Observation;
@@ -44,10 +45,31 @@ describe("llm scorer", () => {
     expect(j).toMatchObject({
       scorer: "llm:test-model",
       eventType: "guidance_change",
-      consequence: 0.45,
+      consequence: 0.9,
       urgency: 0.7,
       matches: [{ targetKey: "entity:e1", name: "NVDA", strength: 1 }],
     });
+  });
+
+  it("passes trades to the model and maps trade directions", async () => {
+    const trade = { id: "tr1", name: "AI infra buildout", thesis: "Capex compounds", keywords: ["GPU"], tickers: ["NVDA"], strengthens: [], weakens: [], preset: true, createdAt: "" };
+    const { calls, fetchImpl } = fakeLlm(() =>
+      completion({
+        event_type: "guidance_change",
+        consequence: 0.9,
+        urgency: 0.7,
+        matched_targets: ["trade:tr1", "entity:e1"],
+        directions: { "trade:tr1": "strengthens", "entity:e1": "neutral" },
+        rationale: "Higher guidance implies more AI capex.",
+      }),
+    );
+    const j = await createLlmScorer(llm, fetchImpl).judge(obs, source, { ...watchlist, trades: [trade] });
+    const sent = JSON.parse(JSON.parse(calls[0]?.init.body as string).messages[1].content).tracked_targets;
+    expect(sent[2]).toMatchObject({ key: "trade:tr1", thesis: "Capex compounds" });
+    expect(j.matches).toEqual([
+      { targetKey: "trade:tr1", name: "AI infra buildout", strength: 1, direction: "strengthens" },
+      { targetKey: "entity:e1", name: "NVDA", strength: 1 },
+    ]);
   });
 
   it.each([
@@ -61,5 +83,50 @@ describe("llm scorer", () => {
     expect(j.eventType).toBe("guidance_change");
     expect(j.matches.map((m) => m.targetKey)).toEqual(["entity:e1"]);
     expect(j.rationale).toContain(marker);
+  });
+});
+
+describe("llm gating", () => {
+  const ok = () => completion({ material: true, event_type: "guidance_change", consequence: 0.9, urgency: 0.7, matched_targets: ["entity:e1"], rationale: "r" });
+
+  it("skips the model for aggregator items with no tracked match", async () => {
+    const { calls, fetchImpl } = fakeLlm(ok);
+    const j = await createLlmScorer(llm, fetchImpl).judge({ ...obs, title: "Local bakery wins award" }, { ...source, type: "google-news" }, watchlist);
+    expect(calls).toHaveLength(0);
+    expect(j.scorer).toBe("heuristic");
+  });
+
+  it("always sends primary-source items and maps the material verdict", async () => {
+    const { calls, fetchImpl } = fakeLlm(ok);
+    const j = await createLlmScorer(llm, fetchImpl).judge({ ...obs, title: "Modifying the Scope of Additional Duties" }, source, watchlist);
+    expect(calls).toHaveLength(1);
+    expect(j.material).toBe(true);
+  });
+
+  it("falls back to the heuristic once the daily cap is reached", async () => {
+    const { calls, fetchImpl } = fakeLlm(ok);
+    const scorer = createLlmScorer({ ...llm, maxCallsPerDay: 1 }, fetchImpl);
+    await scorer.judge(obs, source, watchlist);
+    const second = await scorer.judge(obs, source, watchlist);
+    expect(calls).toHaveLength(1);
+    expect(second.scorer).toBe("heuristic");
+    expect(second.material).toBeUndefined();
+    expect(second.rationale).toContain("daily cap");
+  });
+});
+
+describe("llm request options", () => {
+  const ok = () => completion({ material: false, event_type: "other", consequence: 0.1, urgency: 0.1, matched_targets: [], rationale: "r" });
+  it("sends reasoning and max_tokens when configured", async () => {
+    const { calls, fetchImpl } = fakeLlm(ok);
+    await createLlmScorer({ ...llm, reasoning: "off", maxTokens: 800 }, fetchImpl).judge(obs, source, watchlist);
+    const body = JSON.parse(calls[0]?.init.body as string);
+    expect(body.reasoning).toEqual({ enabled: false });
+    expect(body.max_tokens).toBe(800);
+  });
+  it("passes an effort level through", async () => {
+    const { calls, fetchImpl } = fakeLlm(ok);
+    await createLlmScorer({ ...llm, reasoning: "low" }, fetchImpl).judge(obs, source, watchlist);
+    expect(JSON.parse(calls[0]?.init.body as string).reasoning).toEqual({ effort: "low" });
   });
 });

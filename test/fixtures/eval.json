@@ -1,0 +1,272 @@
+[
+ {
+  "source": "Federal Reserve press releases",
+  "title": "Federal Reserve issues FOMC statement",
+  "label": "alert"
+ },
+ {
+  "source": "White House presidential actions",
+  "title": "Modifying the Scope of Products of Canada Subject to the Additional Duties Imposed to Offset Canadian Discrimination Against American Products",
+  "label": "alert"
+ },
+ {
+  "source": "Federal Register: Commerce BIS (export controls)",
+  "title": "Measures To Restrict Stockpiling of Polysilicon and Polysilicon Derivatives Under Proclamation 11052",
+  "label": "alert"
+ },
+ {
+  "source": "SEC press releases",
+  "title": "SEC Issues “Innovation Exemption” to Facilitate the Trading of Tokenized NMS Stock and Request for Comment",
+  "label": "alert"
+ },
+ {
+  "source": "SEC press releases",
+  "title": "SEC Proposal Would Address How Investment Advisers and Funds Can Custody Crypto Assets Under the Federal Securities Laws",
+  "label": "alert"
+ },
+ {
+  "source": "CFTC press releases",
+  "title": "CFTC Seeks Public Comment on Advanced Notice of Proposed Rulemaking Relating to Regulation Crypto Asset Transactions",
+  "label": "alert"
+ },
+ {
+  "source": "NRC news releases",
+  "title": "NRC Launches Accelerated Review of New U.S. Uranium Enrichment Facility to Strengthen Nuclear Fuel Supply",
+  "label": "alert"
+ },
+ {
+  "source": "NRC news releases",
+  "title": "NRC Proposes Broad Overhaul of Nuclear Reactor Regulations",
+  "label": "alert"
+ },
+ {
+  "source": "Google News: power & nuclear",
+  "title": "Google and Constellation Announce Landmark Agreement to Bring 890 MW of New Nuclear Capacity to PJM Grid",
+  "label": "alert"
+ },
+ {
+  "source": "Google News: crypto policy",
+  "title": "CFTC Proposes First Crypto Rules as CLARITY Act Stalls - Altcoin Buzz",
+  "label": "alert"
+ },
+ {
+  "source": "Google News: crypto policy",
+  "title": "CLARITY Act Is Dead, but First 3x Bitcoin and Ethereum ETFs Clear US Regulatory Hurdle - Yahoo Finance",
+  "label": "alert"
+ },
+ {
+  "source": "Federal Reserve press releases",
+  "title": "Federal Reserve Board announces approval of application by Isabella Bank Corporation",
+  "label": "noise"
+ },
+ {
+  "source": "Federal Reserve press releases",
+  "title": "Federal Reserve Board issues enforcement action with former employee of Sandy Spring Bank",
+  "label": "noise"
+ },
+ {
+  "source": "Federal Reserve press releases",
+  "title": "Minutes of the Board's discount rate meetings on July 20 and July 29, 2026",
+  "label": "noise"
+ },
+ {
+  "source": "CFTC press releases",
+  "title": "CFTC Staff Extends Brexit-Related No-Action Positions",
+  "label": "noise"
+ },
+ {
+  "source": "CFTC press releases",
+  "title": "CFTC Chairman Selig and Kansas State University Announce Agenda for October 22-23 AgCon Conference in Overland Park",
+  "label": "noise"
+ },
+ {
+  "source": "EIA Today in Energy",
+  "title": "What goes into diesel prices?",
+  "label": "noise"
+ },
+ {
+  "source": "EIA Today in Energy",
+  "title": "Henry Hub natural gas prices this summer were 6% lower than last summer",
+  "label": "noise"
+ },
+ {
+  "source": "NRC news releases",
+  "title": "NRC Schedules Public Outreach to Discuss Palo Verde Nuclear Power Plant Performance",
+  "label": "noise"
+ },
+ {
+  "source": "NRC news releases",
+  "title": "NRC to Host Public Meeting on Farley Nuclear Plant’s 2025 Safety Performance",
+  "label": "noise"
+ },
+ {
+  "source": "SEC press releases",
+  "title": "SEC Charges Two Individuals With Orchestrating Fraud Scheme That Targeted Veterans",
+  "label": "noise"
+ },
+ {
+  "source": "SEC press releases",
+  "title": "SEC Investor Advisory Committee to Host Sept. 10 Meeting",
+  "label": "noise"
+ },
+ {
+  "source": "White House news",
+  "title": "Presidential Message on German American Day",
+  "label": "noise"
+ },
+ {
+  "source": "White House presidential actions",
+  "title": "National Manufacturing Day, 2026",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: gold & dollar",
+  "title": "Gold price rises as oil falls, Fed rate hike bets ease - Mining.com.au",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: gold & dollar",
+  "title": "Gold Price Moves Sideways: Stronger US Dollar Offsets Cooling Fed Rate Hike Expectations - Bitget",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: gold & dollar",
+  "title": "Gold Price Today: Delhi Gold Falls ₹200 to ₹1.496 Lakh, Silver Holds at ₹2.27 Lakh - Sangri Today",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: gold & dollar",
+  "title": "India Gold price today: Gold falls, according to FXStreet data - Mitrade",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: rates & curve",
+  "title": "Gold Holds Above $4,100 as Firm Dollar and High Treasury Yields Weigh Ahead of FOMC Minutes - VT Markets",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: power & nuclear",
+  "title": "Legislators talk power grid/nuclear option, OG&E talks rate hike proposal - KFOR",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: power & nuclear",
+  "title": "VanEck says nuclear power approval could boost AI and ease Bitcoin sell pressure - TradingView",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: crypto policy",
+  "title": "China’s Stablecoin Underground Hits $104 Billion Despite Beijing’s Crypto Ban - Forkast News",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: crypto policy",
+  "title": "Tether Hit With Lawsuit Over $2.76 Million Stablecoin Freeze - Decrypt News",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: crypto policy",
+  "title": "Binance Bitcoin Outflows Hit Three-Year High on Stablecoin Inflows - Altcoin Buzz",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: crypto policy",
+  "title": "Changer+ Launches Stablecoin-First Self-Custodial Wallet to Make Stablecoins Easier to Use - Decrypt News",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: crypto policy",
+  "title": "BitGo CEO Mike Belshe Warns US Crypto Is at Risk After CLARITY Act Failure - Bitcoin Foundation",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: crypto policy",
+  "title": "Fairshake Targets 32 House Candidates as Crypto Push Intensifies After CLARITY Act Stalls - MEXC",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: crypto policy",
+  "title": "Cassidy Discusses Social Security Win with Passage of Claiming Age Clarity Act on Mornings with Fox Business",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: AI infra",
+  "title": "NVIDIA & 2 Momentum Stocks to Buy in October for Big Upside - Yahoo Finance UK",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: AI infra",
+  "title": "Bradley County faces self-funded legal costs in data center zoning lawsuit - WTVC",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: AI infra",
+  "title": "Proposed data center expansion in Tysons put on hold - FFXnow",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: tariffs & reshoring",
+  "title": "Before the Midterms: What Americans Think About Trade and Tariffs - Council on Foreign Relations (CFR)",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: tariffs & reshoring",
+  "title": "Four German Transmission Operators Publish 2027 Grid Tariffs at 3.54 ct/kWh - energynews.pro",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: tariffs & reshoring",
+  "title": "Trump declares tariffs have made the US 'rich again' - WKYC",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: tariffs & reshoring",
+  "title": "Chippewa Valley Farmers Share Struggles With Fuel Prices, Tariffs - Civic Media",
+  "label": "noise"
+ },
+ {
+  "source": "Hacker News (100+ points)",
+  "title": "Mistral Large 4: \"Le Chonk\"",
+  "label": "noise"
+ },
+ {
+  "source": "Hacker News (100+ points)",
+  "title": "OpenTPU – An open-source AI accelerator, developed by AI",
+  "label": "noise"
+ },
+ {
+  "source": "SEC EDGAR: latest 8-K",
+  "title": "8-K - CHEVRON CORP (0000093410) (Filer)",
+  "label": "noise"
+ },
+ {
+  "source": "Google News: rates & curve",
+  "title": "Fed cuts rates by 50 basis points in surprise move - Reuters",
+  "label": "alert",
+  "synthetic": true
+ },
+ {
+  "source": "Google News: AI infra",
+  "title": "Microsoft raises fiscal 2027 capex guidance to $120 billion - CNBC",
+  "label": "alert",
+  "synthetic": true
+ },
+ {
+  "source": "Google News: crypto policy",
+  "title": "Senate passes CLARITY Act crypto market structure bill - Bloomberg",
+  "label": "alert",
+  "synthetic": true
+ },
+ {
+  "source": "Federal Register: Commerce BIS (export controls)",
+  "title": "Commerce tightens AI chip export controls to China",
+  "label": "alert",
+  "synthetic": true
+ },
+ {
+  "source": "White House presidential actions",
+  "title": "Imposing Tariffs of 25 Percent on Imports of Semiconductors",
+  "label": "alert",
+  "synthetic": true
+ }
+]
