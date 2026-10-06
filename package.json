@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "eval": "tsx scripts/eval.ts",
-    "digest": "tsx scripts/digest.ts"
+    "digest": "tsx scripts/digest.ts",
+    "replay": "tsx scripts/replay.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.18.0",

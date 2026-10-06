@@ -57,7 +57,7 @@ async function main(): Promise<void> {
       await runDueSources(deps, config.pollIntervalSeconds);
       if (config.digestTime && config.barkUrl) {
         await maybeSendDigest(
-          { store, barkUrl: config.barkUrl, log: deps.log },
+          { store, barkUrl: config.barkUrl, market: true, log: deps.log },
           { time: config.digestTime, timeZone: config.digestTimeZone },
         ).catch((err) => deps.log?.(`digest failed: ${errorMessage(err)}`));
       }

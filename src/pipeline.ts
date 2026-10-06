@@ -16,7 +16,7 @@ import type { Scorer } from "./scoring/types.js";
 import { getAdapter } from "./sources/registry.js";
 import type { SourceContext } from "./sources/types.js";
 import type { Alert, HeldReason, RawItem, Source } from "./types.js";
-import { errorMessage, newId, nowIso } from "./util.js";
+import { errorMessage, newId } from "./util.js";
 
 export interface PipelineDeps {
   store: Store;
@@ -42,6 +42,8 @@ export interface PipelineDeps {
   slackWebhookUrl?: string;
   fetch?: typeof fetch;
   log?: (msg: string) => void;
+  /** Clock override, so a replay judges history as of when each item was seen. */
+  now?: () => Date;
 }
 
 const TITLE_DEDUPE_WINDOW_MS = 7 * 24 * 3600_000;
@@ -71,9 +73,11 @@ export async function processItems(
     entities: await store.listEntities(),
     trades: await store.listTrades(),
   };
-  const since = new Date(Date.now() - policy.accumulationWindowHours * 3600_000).toISOString();
+  const nowMs = (deps.now?.() ?? new Date()).getTime();
+  const at = new Date(nowMs).toISOString();
+  const since = new Date(nowMs - policy.accumulationWindowHours * 3600_000).toISOString();
   const titleSince =
-    getAdapter(source.type).dedupeByTitle === false ? null : new Date(Date.now() - TITLE_DEDUPE_WINDOW_MS).toISOString();
+    getAdapter(source.type).dedupeByTitle === false ? null : new Date(nowMs - TITLE_DEDUPE_WINDOW_MS).toISOString();
 
   for (const item of items) {
     const draft = normalize(source.id, item);
@@ -82,14 +86,14 @@ export async function processItems(
       result.duplicates++;
       continue;
     }
-    const observation = await store.insertObservation(draft);
+    const observation = await store.insertObservation(draft, at);
     result.inserted++;
 
     // Backlog (e.g. a feed's history on first poll) and a new source's first batch are stored and scored
     // but never alert or accumulate, so they get the free heuristic rather than a model call.
-    const held: HeldReason | undefined = isStale(observation.publishedAt, policy.maxAlertAgeHours) ? "stale" : opts.baseline ? "baseline" : undefined;
+    const held: HeldReason | undefined = isStale(observation.publishedAt, policy.maxAlertAgeHours, nowMs) ? "stale" : opts.baseline ? "baseline" : undefined;
     const scored = await (held ? heuristicScorer : scorer).judge(observation, source, watchlist);
-    const judgment = { ...scored, ...(held ? { held } : {}), id: newId(), observationId: observation.id, createdAt: nowIso() };
+    const judgment = { ...scored, ...(held ? { held } : {}), id: newId(), observationId: observation.id, createdAt: at };
     if (held) {
       await store.insertJudgment(judgment, held === "stale" ? new Date(observation.publishedAt!).toISOString() : BASELINE_SIGNAL_AT);
       continue;
@@ -102,11 +106,11 @@ export async function processItems(
 
     const decision = decideAlert(judgment, priorWeakSums, policy);
     if (!decision) continue;
-    if (await coolingDown(store, decision, policy)) {
+    if (await coolingDown(store, decision, policy, nowMs)) {
       await store.markHeld(judgment.id, "cooldown");
       continue;
     }
-    if (await alreadyAlertedStory(store, observation.title, policy.storyWindowHours)) {
+    if (await alreadyAlertedStory(store, observation.title, policy.storyWindowHours, nowMs)) {
       await store.markHeld(judgment.id, "same_story");
       continue;
     }
@@ -118,7 +122,7 @@ export async function processItems(
       targetKey: decision.targetKey,
       delivered: false,
       deliveryError: null,
-    });
+    }, at);
     deps.log?.(`ALERT [${decision.reason} ${decision.score}] ${observation.title}`);
     const payload = buildPayload(alert, observation, judgment, source);
     const channels: (() => Promise<void>)[] = [];
@@ -180,22 +184,22 @@ export async function runDueSources(deps: PipelineDeps, defaultIntervalSeconds: 
   return results;
 }
 
-async function coolingDown(store: Store, decision: AlertDecision, policy: PipelineDeps["policy"]): Promise<boolean> {
+async function coolingDown(store: Store, decision: AlertDecision, policy: PipelineDeps["policy"], nowMs: number): Promise<boolean> {
   const { alertCooldownHours, cooldownBypassScore } = policy;
   if (!alertCooldownHours || !decision.targetKey || decision.material) return false;
   if (decision.reason === "direct" && cooldownBypassScore !== undefined && decision.score >= cooldownBypassScore) return false;
   const last = await store.lastAlertAt(decision.targetKey);
-  return last !== null && Date.parse(last) > Date.now() - alertCooldownHours * 3600_000;
+  return last !== null && Date.parse(last) > nowMs - alertCooldownHours * 3600_000;
 }
 
-async function alreadyAlertedStory(store: Store, title: string, windowHours: number | undefined): Promise<boolean> {
+async function alreadyAlertedStory(store: Store, title: string, windowHours: number | undefined, nowMs: number): Promise<boolean> {
   if (!windowHours) return false;
-  const since = new Date(Date.now() - windowHours * 3600_000).toISOString();
+  const since = new Date(nowMs - windowHours * 3600_000).toISOString();
   return (await store.recentAlertTitles(since)).some((t) => sameStory(t, title));
 }
 
-function isStale(publishedAt: string | null, maxAgeHours: number | undefined): boolean {
+function isStale(publishedAt: string | null, maxAgeHours: number | undefined, nowMs: number): boolean {
   if (!publishedAt || !maxAgeHours) return false;
   const t = Date.parse(publishedAt);
-  return Number.isFinite(t) && t < Date.now() - maxAgeHours * 3600_000;
+  return Number.isFinite(t) && t < nowMs - maxAgeHours * 3600_000;
 }

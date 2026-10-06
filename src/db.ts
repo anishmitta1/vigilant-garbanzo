@@ -387,10 +387,10 @@ export class Store {
     return rows.length > 0;
   }
 
-  async insertObservation(o: NewObservation): Promise<Observation> {
+  async insertObservation(o: NewObservation, fetchedAt = nowIso()): Promise<Observation> {
     const obs: Observation = {
       id: newId(),
-      fetchedAt: nowIso(),
+      fetchedAt,
       sourceId: o.sourceId,
       externalId: o.externalId,
       url: o.url,
@@ -502,8 +502,8 @@ export class Store {
   }
 
   // Alerts
-  async insertAlert(a: Omit<Alert, "id" | "createdAt">): Promise<Alert> {
-    const alert: Alert = { id: newId(), createdAt: nowIso(), ...a };
+  async insertAlert(a: Omit<Alert, "id" | "createdAt">, createdAt = nowIso()): Promise<Alert> {
+    const alert: Alert = { id: newId(), createdAt, ...a };
     await this.run(
       `INSERT INTO alerts (id, observation_id, judgment_id, reason, score, target_key, delivered, delivery_error, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -520,6 +520,29 @@ export class Store {
       ],
     );
     return alert;
+  }
+
+  /** Alerts created after `since`, oldest first, with headline and judgment. */
+  async alertsSince(since: string): Promise<{ createdAt: string; title: string; judgment: Judgment }[]> {
+    const rows = await this.all(
+      `SELECT a.created_at AS alert_at, o.title AS o_title, j.* FROM alerts a
+       JOIN judgments j ON j.id = a.judgment_id
+       JOIN observations o ON o.id = a.observation_id
+       WHERE a.created_at > ?
+       ORDER BY a.created_at`,
+      [since],
+    );
+    return rows.map((r) => ({ createdAt: s(r.alert_at), title: s(r.o_title), judgment: toJudgment(r) }));
+  }
+
+  async firstObservationAt(): Promise<string | null> {
+    const [row] = await this.all("SELECT MIN(fetched_at) AS t FROM observations");
+    return row?.t ? s(row.t) : null;
+  }
+
+  /** Replay only: drop every observation, judgment and alert, keeping sources and watchlists. */
+  async resetEvents(): Promise<void> {
+    for (const table of ["alerts", "judgment_targets", "judgments", "observations", "meta"]) await this.run(`DELETE FROM ${table}`);
   }
 
   async recentAlertTitles(since: string): Promise<string[]> {
