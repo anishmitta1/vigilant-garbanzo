@@ -38,7 +38,7 @@ for _ in $(seq 1 15); do
   sleep 2
   if curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null; then
     echo "deployed $sha"
-    ls -1dt "$ROOT"/releases/*/ | tail -n +$((KEEP + 1)) | grep -v "$sha" | xargs -r rm -rf
+    ls -1dt "$ROOT"/releases/*/ | tail -n +$((KEEP + 1)) | { grep -v "$sha" || true; } | xargs -r rm -rf
     exit 0
   fi
 done
