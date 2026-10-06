@@ -105,3 +105,30 @@ describe("dedupe", () => {
     expect(await processItems(deps(store), edgar, items)).toMatchObject({ inserted: 3, duplicates: 0 });
   });
 });
+
+describe("ntfy delivery", () => {
+  it("pushes alerts to ntfy alongside the webhook and records failures", async () => {
+    const { store, source } = await setup();
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return new Response("ok", { status: url.startsWith("https://hooks") ? 500 : 200 });
+    }) as unknown as typeof fetch;
+    const d = deps(store, {
+      webhookUrl: "https://hooks.example.com/x",
+      ntfy: { url: "https://ntfy.example/", topic: "mimir-test", token: "tk" },
+      fetch: fetchImpl,
+    });
+    const result = await processItems(d, source, [{ externalId: "1", title: "Nvidia raises full-year guidance", url: "https://a.com/1" }]);
+
+    const push = calls.find((c) => c.url === "https://ntfy.example");
+    expect((push?.init.headers as Record<string, string>).Authorization).toBe("Bearer tk");
+    expect(JSON.parse(String(push?.init.body))).toMatchObject({
+      topic: "mimir-test",
+      title: "Nvidia raises full-year guidance",
+      priority: 5,
+      click: "https://a.com/1",
+    });
+    expect(result.alerts[0]).toMatchObject({ delivered: false, deliveryError: "Webhook HTTP 500" });
+  });
+});

@@ -118,7 +118,9 @@ SEC requires a descriptive `USER_AGENT` with contact info. Reddit blocks its JSO
 
 - Heuristic scorer: matches tracked entities (tickers are case-sensitive) and theme keywords, classifies the event type from an explicit lexicon, and computes `consequence = relevance x event weight x source weight`.
 - Optional LLM scorer: set `LLM_API_KEY` (any OpenAI-compatible API, see `LLM_BASE_URL` and `LLM_MODEL`). If the call fails, scoring falls back to the heuristic.
-- Alerts: `consequence >= ALERT_THRESHOLD` alerts directly. Weak signals (`>= WEAK_SIGNAL_FLOOR`) accumulate per target over `ACCUMULATION_WINDOW_HOURS`, and an alert fires once a target's total reaches `ACCUMULATION_THRESHOLD`. Alerts are stored and POSTed to `ALERT_WEBHOOK_URL` as `{ type: "mimir.alert", alert, observation, judgment, source }`.
+- Alerts: `consequence >= ALERT_THRESHOLD` alerts directly. Weak signals (`>= WEAK_SIGNAL_FLOOR`) accumulate per target over `ACCUMULATION_WINDOW_HOURS`, and an alert fires once a target's total reaches `ACCUMULATION_THRESHOLD`. Alerts are stored and delivered to every configured channel:
+  - **Phone push (ntfy):** install the [ntfy](https://ntfy.sh) app, subscribe to a long random topic, and set `NTFY_TOPIC` to it. No account needed; anyone who knows the topic can read it, so keep it unguessable (or use `NTFY_TOKEN` with a protected topic / self-hosted `NTFY_URL`). Strong direct alerts (score >= 0.85) are sent as urgent (priority 5), other direct alerts as high, accumulated as default; tapping opens the article.
+  - **Webhook:** POST to `ALERT_WEBHOOK_URL` as `{ type: "mimir.alert", alert, observation, judgment, source }`.
 
 ### API
 

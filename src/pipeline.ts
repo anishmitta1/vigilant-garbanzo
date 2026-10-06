@@ -1,4 +1,5 @@
-import { buildPayload, decideAlert, deliverWebhook, type AlertPolicy } from "./alerts.js";
+import { buildPayload, decideAlert, deliverNtfy, deliverWebhook, type AlertPolicy } from "./alerts.js";
+import type { NtfyConfig } from "./config.js";
 import type { Store } from "./db.js";
 import { normalize } from "./preprocess.js";
 import type { Scorer } from "./scoring/types.js";
@@ -13,6 +14,7 @@ export interface PipelineDeps {
   policy: AlertPolicy & { accumulationWindowHours: number };
   sourceContext: SourceContext;
   webhookUrl?: string;
+  ntfy?: NtfyConfig;
   fetch?: typeof fetch;
   log?: (msg: string) => void;
 }
@@ -66,15 +68,20 @@ export async function processItems(deps: PipelineDeps, source: Source, items: Ra
       deliveryError: null,
     });
     deps.log?.(`ALERT [${decision.reason} ${decision.score}] ${observation.title}`);
-    if (deps.webhookUrl) {
-      try {
-        await deliverWebhook(deps.webhookUrl, buildPayload(alert, observation, judgment, source), deps.fetch);
-        await store.markAlertDelivery(alert.id, null);
-        alert.delivered = true;
-      } catch (err) {
-        await store.markAlertDelivery(alert.id, errorMessage(err));
-        alert.deliveryError = errorMessage(err);
-      }
+    const payload = buildPayload(alert, observation, judgment, source);
+    const channels: (() => Promise<void>)[] = [];
+    const { webhookUrl, ntfy } = deps;
+    if (webhookUrl) channels.push(() => deliverWebhook(webhookUrl, payload, deps.fetch));
+    if (ntfy) channels.push(() => deliverNtfy(ntfy, payload, deps.fetch));
+    if (channels.length > 0) {
+      const errors = (await Promise.allSettled(channels.map((send) => send())))
+        .filter((r): r is PromiseRejectedResult => r.status === "rejected")
+        .map((r) => errorMessage(r.reason));
+      const error = errors.length > 0 ? errors.join("; ") : null;
+      await store.markAlertDelivery(alert.id, error);
+      alert.delivered = error === null;
+      alert.deliveryError = error;
+      if (error) deps.log?.(`alert delivery failed: ${error}`);
     }
     result.alerts.push(alert);
   }

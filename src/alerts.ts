@@ -1,3 +1,4 @@
+import type { NtfyConfig } from "./config.js";
 import type { Judgment, Observation, Source } from "./types.js";
 import type { Alert, AlertReason } from "./types.js";
 
@@ -64,4 +65,34 @@ export async function deliverWebhook(url: string, payload: AlertPayload, fetchIm
     signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) throw new Error(`Webhook HTTP ${res.status}`);
+}
+
+/** ntfy priority: 5 (urgent) for very strong direct alerts, 4 for direct, 3 for accumulated. */
+export function ntfyPriority(alert: Pick<Alert, "reason" | "score">): number {
+  if (alert.reason === "accumulated") return 3;
+  return alert.score >= 0.85 ? 5 : 4;
+}
+
+/** Push an alert to a phone via ntfy (https://ntfy.sh) using its JSON publish API. */
+export async function deliverNtfy(ntfy: NtfyConfig, payload: AlertPayload, fetchImpl: typeof fetch = fetch): Promise<void> {
+  const { alert, observation, judgment, source } = payload;
+  const targets = judgment.matches.map((m) => m.name).join(", ");
+  const headline = alert.reason === "direct" ? "Direct" : "Accumulated weak signals";
+  const message = [`${headline} (${alert.score}) · ${judgment.eventType} · ${targets}`, judgment.rationale, `via ${source.name}`]
+    .filter(Boolean)
+    .join("\n");
+  const res = await fetchImpl(ntfy.url.replace(/\/$/, ""), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(ntfy.token ? { Authorization: `Bearer ${ntfy.token}` } : {}) },
+    body: JSON.stringify({
+      topic: ntfy.topic,
+      title: observation.title.slice(0, 250),
+      message,
+      priority: ntfyPriority(alert),
+      tags: [alert.reason === "direct" ? "rotating_light" : "chart_with_upwards_trend"],
+      ...(observation.url ? { click: observation.url } : {}),
+    }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) throw new Error(`ntfy HTTP ${res.status}`);
 }

@@ -24,6 +24,7 @@ export function createDeps(config: Config, store: Store): PipelineDeps {
     policy: config,
     sourceContext: { fetch, userAgent: config.userAgent },
     webhookUrl: config.alertWebhookUrl,
+    ntfy: config.ntfy,
     log: (msg) => console.log(`[mimir] ${msg}`),
   };
 }
