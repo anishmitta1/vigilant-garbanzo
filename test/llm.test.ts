@@ -89,11 +89,11 @@ describe("llm scorer", () => {
 describe("llm gating", () => {
   const ok = () => completion({ material: true, event_type: "guidance_change", consequence: 0.9, urgency: 0.7, matched_targets: ["entity:e1"], rationale: "r" });
 
-  it("skips the model for aggregator items with no tracked match", async () => {
+  it("sends aggregator items to the model even without a keyword match", async () => {
     const { calls, fetchImpl } = fakeLlm(ok);
-    const j = await createLlmScorer(llm, fetchImpl).judge({ ...obs, title: "Local bakery wins award" }, { ...source, type: "google-news" }, watchlist);
-    expect(calls).toHaveLength(0);
-    expect(j.scorer).toBe("heuristic");
+    const j = await createLlmScorer(llm, fetchImpl).judge({ ...obs, title: "Hyperscaler doubles data-center spend" }, { ...source, type: "google-news" }, watchlist);
+    expect(calls).toHaveLength(1);
+    expect(j.material).toBe(true);
   });
 
   it("always sends primary-source items and maps the material verdict", async () => {
