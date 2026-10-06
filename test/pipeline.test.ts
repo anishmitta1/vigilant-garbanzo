@@ -289,4 +289,14 @@ describe("story grouping", () => {
     expect(result.inserted).toBe(2);
     expect(result.alerts).toHaveLength(1);
   });
+
+  it("scores backlog and first-poll items without the model and marks why they were held", async () => {
+    const { store, source } = await setup();
+    const model = { name: "llm:test", judge: async () => { throw new Error("model must not be called"); } };
+    const d = deps(store, { scorer: model, policy: { alertThreshold: 0.6, weakSignalFloor: 0.2, accumulationThreshold: 1.2, accumulationWindowHours: 72, maxAlertAgeHours: 48 } });
+    await processItems(d, source, [{ externalId: "a", title: "Nvidia raises guidance", publishedAt: "2020-01-01T00:00:00Z" }]);
+    await processItems(d, source, [{ externalId: "b", title: "Nvidia wins contract" }], { baseline: true });
+    const held = (await store.listObservations()).map((o) => [o.judgment?.scorer, o.judgment?.held]);
+    expect(held).toEqual(expect.arrayContaining([["heuristic", "stale"], ["heuristic", "baseline"]]));
+  });
 });

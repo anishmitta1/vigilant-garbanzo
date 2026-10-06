@@ -164,4 +164,8 @@ curl -X POST localhost:3000/sources -H 'content-type: application/json' \
 
 ## Alert quality eval
 
+### Daily digest
+
+With `BARK_URL` set, Mimir sends one Bark push a day at `DIGEST_TIME` (default `16:00`) in `DIGEST_TZ` (default `America/Los_Angeles`). It covers everything since the previous digest: the alerts that fired, the strongest items that didn't (near-misses: the model called them material but below the bar, or scored them 0.3+ while saying not material), items read, model calls, and any failing sources. It is the place to spot misses. If Mimir is down at the scheduled time, the digest goes out when it comes back the same day. Set `DIGEST_TIME=off` to disable it. `npm run digest` prints the digest for the last 24 hours (`DIGEST_HOURS` to change) from `DATABASE_URL`; add `-- --send` to push it.
+
 `npm run eval` scores the labelled headlines in `test/fixtures/eval.json` (real items from our sources, plus a few marked `synthetic`) and reports Bark precision and recall. It uses the LLM scorer when `LLM_API_KEY` is set and the heuristic otherwise. It runs offline with no delivery channels, so run it after any scoring change.

@@ -1,10 +1,12 @@
 import { loadConfig, type Config } from "./config.js";
 import { openStore, type Store } from "./db.js";
+import { maybeSendDigest } from "./digest.js";
 import { runDueSources, type PipelineDeps } from "./pipeline.js";
 import { DEFAULT_SOURCES, PRESET_THEMES, PRESET_TRADES } from "./presets.js";
 import { heuristicScorer } from "./scoring/heuristic.js";
 import { createLlmScorer } from "./scoring/llm.js";
 import { buildServer } from "./server.js";
+import { errorMessage } from "./util.js";
 
 const TICK_MS = 60_000;
 
@@ -53,6 +55,12 @@ async function main(): Promise<void> {
     running = true;
     try {
       await runDueSources(deps, config.pollIntervalSeconds);
+      if (config.digestTime && config.barkUrl) {
+        await maybeSendDigest(
+          { store, barkUrl: config.barkUrl, log: deps.log },
+          { time: config.digestTime, timeZone: config.digestTimeZone },
+        ).catch((err) => deps.log?.(`digest failed: ${errorMessage(err)}`));
+      }
     } finally {
       running = false;
     }
