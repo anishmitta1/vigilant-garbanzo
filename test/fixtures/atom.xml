@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Latest Filings</title>
+  <entry>
+    <title type="html">8-K - NVIDIA CORP (0001045810) (Filer)</title>
+    <link rel="alternate" type="text/html" href="https://www.sec.gov/Archives/edgar/data/1045810/x-index.htm"/>
+    <summary type="html">&lt;b&gt;Filed:&lt;/b&gt; 2026-10-05 Item 2.02</summary>
+    <updated>2026-10-05T16:05:12-04:00</updated>
+    <id>urn:tag:sec.gov,2008:accession-number=0001045810-26-000123</id>
+  </entry>
+</feed>

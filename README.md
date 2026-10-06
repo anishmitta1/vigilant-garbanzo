@@ -64,3 +64,91 @@ Start with a narrow set of sources and a few strong preset themes. Optimize for 
 - Avoid single hard gates that create catastrophic false negatives.
 - Keep investor-specific context private and configurable.
 - Prefer simple code and explicit decision functions over agentic complexity.
+
+## Running
+
+Requires Node 22+.
+
+```bash
+npm install
+cp .env.example .env   # optional; every setting has a default
+npm run dev            # tsx watch on :3000
+npm test && npm run typecheck && npm run lint
+npm run build && npm start
+```
+
+On first start Mimir seeds the preset themes and a default set of sources, then polls every enabled source on its interval (`POLL_INTERVAL_SECONDS`, or per source).
+
+### Storage (SQLite now, Turso later)
+
+Storage uses [`@libsql/client`](https://github.com/tursodatabase/libsql-client-ts). Locally `DATABASE_URL=file:mimir.db` is a plain SQLite file. To move to Turso, set `DATABASE_URL=libsql://<db>-<org>.turso.io` and `TURSO_AUTH_TOKEN`; no code changes are needed.
+
+### Code layout
+
+```text
+src/
+  sources/        one adapter per source type + registry (System 0 ingestion)
+  preprocess.ts   HTML stripping, URL canonicalization, title fingerprints (dedupe)
+  scoring/        System 1: heuristic scorer (default) and optional LLM scorer
+  alerts.ts       alert decision (direct + accumulated weak signals) and webhook delivery
+  pipeline.ts     source -> observation -> classify -> score -> store -> alert
+  db.ts           libSQL schema and queries
+  server.ts       HTTP API
+```
+
+### Sources
+
+| type | what it covers | config |
+| --- | --- | --- |
+| `rss` | Any RSS/Atom/RDF feed: news, Substack, blogs, Reddit `.rss`, YouTube channels, arXiv, GitHub `releases.atom`, central banks | `{ url }` |
+| `google-news` | Google News search (supports `site:`, `when:7d`, `OR`) | `{ query, language?, country? }` |
+| `sec-edgar` | SEC filings, market-wide or for one company | `{ forms?: ["8-K"], cik?, count? }` |
+| `hackernews` | HN stories via Algolia | `{ query?, minPoints?, limit? }` |
+| `reddit` | Subreddit listings | `{ subreddit, sort?, minScore?, limit? }` |
+| `federal-register` | US rules, proposed rules, notices, presidential docs | `{ term?, agencies?, documentTypes? }` |
+| `json` | Any JSON API with dotted-path field mapping | `{ url, itemsPath, fields: { id?, title, url?, summary?, publishedAt? } }` |
+| `html` | Any HTML listing page via CSS selectors (press releases, regulators, IR pages) | `{ url, itemSelector, fields: { title?, link?, summary?, date?, dateAttribute? } }` |
+| `push` | Anything that can POST to `/ingest` (scripts, other scrapers, Zapier) | `{}` |
+
+To add a source type, add a file in `src/sources/` exporting `defineAdapter({ type, description, configSchema, fetch })` and register it in `registry.ts`.
+
+SEC requires a descriptive `USER_AGENT` with contact info. Reddit blocks its JSON API from many datacenter IPs; the `reddit` adapter then falls back to the subreddit's RSS feed (no scores, so `minScore` is ignored).
+
+### Scoring and alerts
+
+- Heuristic scorer: matches tracked entities (tickers are case-sensitive) and theme keywords, classifies the event type from an explicit lexicon, and computes `consequence = relevance x event weight x source weight`.
+- Optional LLM scorer: set `LLM_API_KEY` (any OpenAI-compatible API, see `LLM_BASE_URL` and `LLM_MODEL`). If the call fails, scoring falls back to the heuristic.
+- Alerts: `consequence >= ALERT_THRESHOLD` alerts directly. Weak signals (`>= WEAK_SIGNAL_FLOOR`) accumulate per target over `ACCUMULATION_WINDOW_HOURS`, and an alert fires once a target's total reaches `ACCUMULATION_THRESHOLD`. Items published more than `MAX_ALERT_AGE_HOURS` (default 48) ago are stored and scored but never alert or accumulate, so a new source's backlog doesn't page you. Alerts are stored and delivered to every configured channel:
+  - **iPhone push (Bark):** install [Bark](https://apps.apple.com/app/id1403753865) and set `BARK_URL` to the device URL it shows (`https://api.day.app/<key>`). Treat it as a secret (anyone with it can push to your phone). Strong direct alerts (>= 0.85) are time-sensitive, so they break through Focus; tapping opens the article. Bark talks to Apple's push service directly, so it is more reliable on iPhone than ntfy.
+  - **Phone push (ntfy):** install the [ntfy](https://ntfy.sh) app, subscribe to a long random topic, and set `NTFY_TOPIC` to it. No account needed; anyone who knows the topic can read it, so keep it unguessable (or use `NTFY_TOKEN` with a protected topic / self-hosted `NTFY_URL`). Strong direct alerts (score >= 0.85) are sent as urgent (priority 5), other direct alerts as high, accumulated as default; tapping opens the article.
+  - **Webhook:** POST to `ALERT_WEBHOOK_URL` as `{ type: "mimir.alert", alert, observation, judgment, source }`.
+
+### API
+
+| method | path | |
+| --- | --- | --- |
+| GET | `/health` | |
+| GET | `/source-types` | available adapters |
+| GET/POST | `/themes` | `{ name, description?, keywords? }` |
+| DELETE | `/themes/:id` | |
+| GET/POST | `/entities` | `{ name, kind?: ticker\|company\|person\|project\|regulation\|other, aliases? }` |
+| DELETE | `/entities/:id` | |
+| GET/POST | `/sources` | `{ type, name, config, enabled?, weight?, pollIntervalSeconds? }` |
+| PATCH/DELETE | `/sources/:id` | PATCH `{ enabled }` |
+| POST | `/sources/:id/run` | run one source now |
+| POST | `/ingest` | `{ source?, items: [{ id?, title, url?, summary?, publishedAt? }] }` |
+| GET | `/observations?limit=` | recent items with judgments |
+| GET | `/alerts?limit=` | recent alerts |
+
+```bash
+curl -X POST localhost:3000/entities -H 'content-type: application/json' \
+  -d '{"name":"NVDA","kind":"ticker","aliases":["Nvidia"]}'
+curl -X POST localhost:3000/sources -H 'content-type: application/json' \
+  -d '{"type":"google-news","name":"Nvidia news","config":{"query":"Nvidia when:1d"}}'
+```
+
+## CI/CD
+
+- **CI:** `.github/workflows/ci.yml` runs lint, typecheck, tests and build on every PR and push to `main`.
+- **CD (pull-based):** the server deploys itself. `mimir-deploy.timer` runs [`deploy/deploy.sh`](deploy/deploy.sh) every 2 minutes; when `main` has a new commit it clones it into `/opt/mimir/releases/<sha>`, runs `npm ci`, tests and build as the `mimir` user, points `/opt/mimir/current` at it, restarts `mimir.service`, and rolls back if `/health` doesn't come up. A failing commit is marked `<sha>.failed` and not retried. No deploy credentials live in GitHub.
+- **Server layout:** Node in `/opt/node`, env in `/etc/mimir.env`, SQLite in `/var/lib/mimir`, units in [`deploy/`](deploy/). Logs: `journalctl -u mimir -u mimir-deploy`.

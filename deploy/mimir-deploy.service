@@ -1,0 +1,7 @@
+[Unit]
+Description=Deploy the latest Mimir commit on main
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/mimir/current/deploy/deploy.sh
