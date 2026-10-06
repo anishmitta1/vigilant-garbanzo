@@ -6,6 +6,7 @@ export interface NtfyConfig {
 
 export interface Config {
   port: number;
+  host: string;
   databaseUrl: string;
   tursoAuthToken?: string;
   userAgent: string;
@@ -37,6 +38,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const ntfyTopic = str(env.NTFY_TOPIC);
   return {
     port: num(env.PORT, 3000),
+    host: str(env.HOST) ?? "0.0.0.0",
     databaseUrl: str(env.DATABASE_URL) ?? "file:mimir.db",
     tursoAuthToken: str(env.TURSO_AUTH_TOKEN),
     userAgent: str(env.USER_AGENT) ?? "Mimir/0.1 (contact: unset)",

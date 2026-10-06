@@ -37,7 +37,7 @@ async function main(): Promise<void> {
   const deps = createDeps(config, store);
 
   const app = buildServer(store, deps);
-  await app.listen({ port: config.port, host: "0.0.0.0" });
+  await app.listen({ port: config.port, host: config.host });
   deps.log?.(`listening on :${config.port} (db ${config.databaseUrl.split("?")[0]}, scorer ${deps.scorer.name})`);
 
   let running = false;
