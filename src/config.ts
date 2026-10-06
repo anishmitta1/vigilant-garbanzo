@@ -14,11 +14,14 @@ export interface Config {
   alertWebhookUrl?: string;
   ntfy?: NtfyConfig;
   barkUrl?: string;
+  slackWebhookUrl?: string;
   alertThreshold: number;
   weakSignalFloor: number;
   accumulationThreshold: number;
   accumulationWindowHours: number;
   maxAlertAgeHours: number;
+  alertCooldownHours: number;
+  cooldownBypassScore: number;
   seedDefaults: boolean;
   llm?: { apiKey: string; baseUrl: string; model: string };
 }
@@ -46,6 +49,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     pollIntervalSeconds: num(env.POLL_INTERVAL_SECONDS, 900),
     alertWebhookUrl: str(env.ALERT_WEBHOOK_URL),
     barkUrl: str(env.BARK_URL),
+    slackWebhookUrl: str(env.SLACK_WEBHOOK_URL),
     ntfy: ntfyTopic
       ? { url: str(env.NTFY_URL) ?? "https://ntfy.sh", topic: ntfyTopic, token: str(env.NTFY_TOKEN) }
       : undefined,
@@ -54,6 +58,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     accumulationThreshold: num(env.ACCUMULATION_THRESHOLD, 1.2),
     accumulationWindowHours: num(env.ACCUMULATION_WINDOW_HOURS, 72),
     maxAlertAgeHours: num(env.MAX_ALERT_AGE_HOURS, 48),
+    alertCooldownHours: num(env.ALERT_COOLDOWN_HOURS, 6),
+    cooldownBypassScore: num(env.COOLDOWN_BYPASS_SCORE, 0.9),
     seedDefaults: env.SEED_DEFAULTS !== "false",
     llm: llmKey
       ? {

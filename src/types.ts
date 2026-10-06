@@ -17,9 +17,29 @@ export interface Entity {
   createdAt: string;
 }
 
+/** Whether an item makes a tracked trade's thesis more or less likely to play out. */
+export type Direction = "strengthens" | "weakens" | "mixed";
+
+/** A popular narrative trade, e.g. "AI infra buildout", tracked with explicit thesis signals. */
+export interface Trade {
+  id: string;
+  name: string;
+  thesis: string;
+  /** Terms that make an item relevant to the trade (case-insensitive). */
+  keywords: string[];
+  /** Symbols in the trade's basket (case-sensitive, `$` prefix allowed). */
+  tickers: string[];
+  /** Phrases that, on a relevant item, indicate the thesis is strengthening / weakening. */
+  strengthens: string[];
+  weakens: string[];
+  preset: boolean;
+  createdAt: string;
+}
+
 export interface Watchlist {
   themes: Theme[];
   entities: Entity[];
+  trades: Trade[];
 }
 
 export interface Source {
@@ -59,10 +79,12 @@ export interface Observation {
 }
 
 export interface TargetMatch {
-  /** `theme:<id>` or `entity:<id>` */
+  /** `theme:<id>`, `entity:<id>` or `trade:<id>` */
   targetKey: string;
   name: string;
   strength: number;
+  /** Set for trades when the item pushes the thesis one way. */
+  direction?: Direction;
 }
 
 export interface Judgment {

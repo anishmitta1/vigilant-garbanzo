@@ -10,6 +10,16 @@ const ThemeBody = z.object({
   keywords: z.array(z.string().min(1)).default([]),
 });
 
+const terms = z.array(z.string().min(1)).default([]);
+const TradeBody = z.object({
+  name: z.string().min(1),
+  thesis: z.string().default(""),
+  keywords: terms,
+  tickers: terms,
+  strengthens: terms,
+  weakens: terms,
+});
+
 const EntityBody = z.object({
   name: z.string().min(1),
   kind: z.enum(["ticker", "company", "person", "project", "regulation", "other"]).default("company"),
@@ -62,6 +72,12 @@ export function buildServer(store: Store, deps: PipelineDeps): FastifyInstance {
   app.post("/themes", async (req, reply) => reply.status(201).send(await store.createTheme(ThemeBody.parse(req.body))));
   app.delete("/themes/:id", async (req, reply) =>
     (await store.deleteTheme(IdParam.parse(req.params).id)) ? reply.status(204).send() : reply.status(404).send(notFound),
+  );
+
+  app.get("/trades", async () => store.listTrades());
+  app.post("/trades", async (req, reply) => reply.status(201).send(await store.createTrade(TradeBody.parse(req.body))));
+  app.delete("/trades/:id", async (req, reply) =>
+    (await store.deleteTrade(IdParam.parse(req.params).id)) ? reply.status(204).send() : reply.status(404).send(notFound),
   );
 
   app.get("/entities", async () => store.listEntities());

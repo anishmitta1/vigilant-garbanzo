@@ -10,13 +10,16 @@ const ResponseSchema = z.object({
   consequence: z.number(),
   urgency: z.number(),
   matched_targets: z.array(z.string()),
+  directions: z.record(z.string(), z.enum(["strengthens", "weakens", "mixed", "neutral"])).optional(),
   rationale: z.string(),
 });
 
 const SYSTEM_PROMPT = `You are a fast triage model for an investor alerting system.
 Decide whether a news item MATERIALLY CHANGES something the investor tracks, not merely whether it is related.
-Respond with JSON: {"event_type": string, "consequence": 0..1, "urgency": 0..1, "matched_targets": [target keys], "rationale": one sentence}.
-consequence ~0 for irrelevant or routine items, >0.6 only for developments likely to change a position or thesis.`;
+Some targets are popular trades with a thesis plus signals that strengthen or weaken it.
+Respond with JSON: {"event_type": string, "consequence": 0..1, "urgency": 0..1, "matched_targets": [target keys], "directions": {trade target key: "strengthens"|"weakens"|"mixed"|"neutral"}, "rationale": one sentence}.
+consequence ~0 for irrelevant or routine items, >0.6 only for developments likely to change a position or thesis.
+For trades, say in the rationale what changed and which way it pushes the trade.`;
 
 /**
  * System-1 scorer backed by any OpenAI-compatible chat completions API.
@@ -30,6 +33,14 @@ export function createLlmScorer(llm: NonNullable<Config["llm"]>, fetchImpl: type
       const targets = [
         ...watchlist.themes.map((t) => ({ key: `theme:${t.id}`, name: t.name, description: t.description })),
         ...watchlist.entities.map((e) => ({ key: `entity:${e.id}`, name: e.name, kind: e.kind, aliases: e.aliases })),
+        ...watchlist.trades.map((t) => ({
+          key: `trade:${t.id}`,
+          name: t.name,
+          thesis: t.thesis,
+          tickers: t.tickers,
+          strengthened_by: t.strengthens,
+          weakened_by: t.weakens,
+        })),
       ];
       try {
         const res = await fetchImpl(`${llm.baseUrl.replace(/\/$/, "")}/chat/completions`, {
@@ -69,7 +80,15 @@ export function createLlmScorer(llm: NonNullable<Config["llm"]>, fetchImpl: type
           urgency: clamp01(parsed.urgency),
           matches: parsed.matched_targets
             .filter((k) => nameByKey.has(k))
-            .map((k) => ({ targetKey: k, name: nameByKey.get(k) ?? k, strength: 1 })),
+            .map((k) => {
+              const direction = parsed.directions?.[k];
+              return {
+                targetKey: k,
+                name: nameByKey.get(k) ?? k,
+                strength: 1,
+                ...(direction && direction !== "neutral" ? { direction } : {}),
+              };
+            }),
           rationale: parsed.rationale,
         };
       } catch (err) {

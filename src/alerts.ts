@@ -1,5 +1,5 @@
 import type { NtfyConfig } from "./config.js";
-import type { Judgment, Observation, Source } from "./types.js";
+import type { Judgment, Observation, Source, TargetMatch } from "./types.js";
 import type { Alert, AlertReason } from "./types.js";
 
 export interface AlertPolicy {
@@ -19,8 +19,21 @@ export interface AlertDecision {
  * signals accumulate per target so a run of small developments still surfaces.
  * `priorWeakSums` maps target key -> weak-signal total before this judgment.
  */
+/** Event types too routine to build toward an accumulated alert on their own. */
+const NON_ACCUMULATING_EVENTS = new Set(["general", "product"]);
+
+/**
+ * Matches that count toward weak-signal accumulation. Trade matches only count when the item
+ * pushes the thesis one way; otherwise a busy topic would accumulate on sheer volume.
+ */
+export function accumulatingMatches(judgment: Pick<Judgment, "eventType" | "matches">): TargetMatch[] {
+  return judgment.matches.filter((m) =>
+    m.targetKey.startsWith("trade:") ? m.direction !== undefined : !NON_ACCUMULATING_EVENTS.has(judgment.eventType),
+  );
+}
+
 export function decideAlert(
-  judgment: Pick<Judgment, "consequence" | "matches">,
+  judgment: Pick<Judgment, "consequence" | "matches" | "eventType">,
   priorWeakSums: Map<string, number>,
   policy: AlertPolicy,
 ): AlertDecision | null {
@@ -30,7 +43,7 @@ export function decideAlert(
   }
   if (judgment.consequence < policy.weakSignalFloor) return null;
   let best: AlertDecision | null = null;
-  for (const m of judgment.matches) {
+  for (const m of accumulatingMatches(judgment)) {
     const total = (priorWeakSums.get(m.targetKey) ?? 0) + judgment.consequence;
     if (total >= policy.accumulationThreshold && (!best || total > best.score)) {
       best = { reason: "accumulated", score: Math.round(total * 1000) / 1000, targetKey: m.targetKey };
@@ -57,6 +70,13 @@ export function buildPayload(alert: Alert, observation: Observation, judgment: J
   };
 }
 
+const ARROWS = { strengthens: "↑ strengthening", weakens: "↓ weakening", mixed: "↕ mixed" } as const;
+
+/** e.g. "AI infra buildout ↑ strengthening, NVDA" */
+export function describeTargets(matches: TargetMatch[]): string {
+  return matches.map((m) => (m.direction ? `${m.name} ${ARROWS[m.direction]}` : m.name)).join(", ");
+}
+
 export async function deliverWebhook(url: string, payload: AlertPayload, fetchImpl: typeof fetch = fetch): Promise<void> {
   const res = await fetchImpl(url, {
     method: "POST",
@@ -76,7 +96,7 @@ export function ntfyPriority(alert: Pick<Alert, "reason" | "score">): number {
 /** Push an alert to a phone via ntfy (https://ntfy.sh) using its JSON publish API. */
 export async function deliverNtfy(ntfy: NtfyConfig, payload: AlertPayload, fetchImpl: typeof fetch = fetch): Promise<void> {
   const { alert, observation, judgment, source } = payload;
-  const targets = judgment.matches.map((m) => m.name).join(", ");
+  const targets = describeTargets(judgment.matches);
   const headline = alert.reason === "direct" ? "Direct" : "Accumulated weak signals";
   const message = [`${headline} (${alert.score}) · ${judgment.eventType} · ${targets}`, judgment.rationale, `via ${source.name}`]
     .filter(Boolean)
@@ -108,7 +128,7 @@ export function barkLevel(alert: Pick<Alert, "reason" | "score">): "timeSensitiv
  */
 export async function deliverBark(barkUrl: string, payload: AlertPayload, fetchImpl: typeof fetch = fetch): Promise<void> {
   const { alert, observation, judgment, source } = payload;
-  const targets = judgment.matches.map((m) => m.name).join(", ");
+  const targets = describeTargets(judgment.matches);
   const headline = alert.reason === "direct" ? "Direct" : "Accumulated weak signals";
   const res = await fetchImpl(barkUrl.replace(/\/+$/, ""), {
     method: "POST",
@@ -124,4 +144,28 @@ export async function deliverBark(barkUrl: string, payload: AlertPayload, fetchI
     signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) throw new Error(`Bark HTTP ${res.status}`);
+}
+
+const slackEscape = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** Post an alert to a Slack incoming webhook (https://api.slack.com/messaging/webhooks). */
+export async function deliverSlack(webhookUrl: string, payload: AlertPayload, fetchImpl: typeof fetch = fetch): Promise<void> {
+  const { alert, observation, judgment, source } = payload;
+  const title = slackEscape(observation.title);
+  const headline = alert.reason === "direct" ? "Direct" : "Accumulated weak signals";
+  const text = [
+    `*${observation.url ? `<${observation.url}|${title}>` : title}*`,
+    `${alert.reason === "direct" && alert.score >= 0.85 ? ":rotating_light: " : ""}${headline} (${alert.score}) · ${slackEscape(describeTargets(judgment.matches))}`,
+    slackEscape(judgment.rationale),
+    `_via ${slackEscape(source.name)}_`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const res = await fetchImpl(webhookUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, unfurl_links: false }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) throw new Error(`Slack HTTP ${res.status}`);
 }

@@ -5,6 +5,7 @@ import type { Observation, Source, Watchlist } from "../src/types.js";
 const watchlist: Watchlist = {
   themes: [{ id: "t1", name: "Semis", description: "", keywords: ["semiconductor"], preset: true, createdAt: "" }],
   entities: [{ id: "e1", name: "NVDA", kind: "ticker", aliases: ["Nvidia"], createdAt: "" }],
+  trades: [],
 };
 const source = { id: "s", name: "test", type: "rss", weight: 0.5 } as Source;
 const obs = { id: "o", title: "Nvidia raises full-year guidance", summary: "" } as Observation;
@@ -48,6 +49,27 @@ describe("llm scorer", () => {
       urgency: 0.7,
       matches: [{ targetKey: "entity:e1", name: "NVDA", strength: 1 }],
     });
+  });
+
+  it("passes trades to the model and maps trade directions", async () => {
+    const trade = { id: "tr1", name: "AI infra buildout", thesis: "Capex compounds", keywords: ["GPU"], tickers: ["NVDA"], strengthens: [], weakens: [], preset: true, createdAt: "" };
+    const { calls, fetchImpl } = fakeLlm(() =>
+      completion({
+        event_type: "guidance_change",
+        consequence: 0.9,
+        urgency: 0.7,
+        matched_targets: ["trade:tr1", "entity:e1"],
+        directions: { "trade:tr1": "strengthens", "entity:e1": "neutral" },
+        rationale: "Higher guidance implies more AI capex.",
+      }),
+    );
+    const j = await createLlmScorer(llm, fetchImpl).judge(obs, source, { ...watchlist, trades: [trade] });
+    const sent = JSON.parse(JSON.parse(calls[0]?.init.body as string).messages[1].content).tracked_targets;
+    expect(sent[2]).toMatchObject({ key: "trade:tr1", thesis: "Capex compounds" });
+    expect(j.matches).toEqual([
+      { targetKey: "trade:tr1", name: "AI infra buildout", strength: 1, direction: "strengthens" },
+      { targetKey: "entity:e1", name: "NVDA", strength: 1 },
+    ]);
   });
 
   it.each([

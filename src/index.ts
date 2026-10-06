@@ -1,7 +1,7 @@
 import { loadConfig, type Config } from "./config.js";
 import { openStore, type Store } from "./db.js";
 import { runDueSources, type PipelineDeps } from "./pipeline.js";
-import { DEFAULT_SOURCES, PRESET_THEMES } from "./presets.js";
+import { DEFAULT_SOURCES, PRESET_THEMES, PRESET_TRADES } from "./presets.js";
 import { heuristicScorer } from "./scoring/heuristic.js";
 import { createLlmScorer } from "./scoring/llm.js";
 import { buildServer } from "./server.js";
@@ -12,8 +12,12 @@ async function seed(store: Store): Promise<void> {
   if ((await store.listThemes()).length === 0) {
     for (const t of PRESET_THEMES) await store.createTheme({ ...t, preset: true });
   }
-  if ((await store.listSources()).length === 0) {
-    for (const s of DEFAULT_SOURCES) await store.createSource(s);
+  if ((await store.listTrades()).length === 0) {
+    for (const t of PRESET_TRADES) await store.createTrade({ ...t, preset: true });
+  }
+  // Add any default source missing by name, so new defaults reach existing databases. Disable rather than delete to opt out.
+  for (const s of DEFAULT_SOURCES) {
+    if (!(await store.findSourceByName(s.name))) await store.createSource(s);
   }
 }
 
@@ -26,6 +30,7 @@ export function createDeps(config: Config, store: Store): PipelineDeps {
     webhookUrl: config.alertWebhookUrl,
     ntfy: config.ntfy,
     barkUrl: config.barkUrl,
+    slackWebhookUrl: config.slackWebhookUrl,
     log: (msg) => console.log(`[mimir] ${msg}`),
   };
 }

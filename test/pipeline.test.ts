@@ -43,11 +43,11 @@ describe("pipeline", () => {
   it("accumulates weak signals into one alert and then resets", async () => {
     const { store, source } = await setup();
     const d = deps(store, { policy: { alertThreshold: 0.6, weakSignalFloor: 0.2, accumulationThreshold: 1.0, accumulationWindowHours: 72 } });
-    // product events: consequence 0.35 each
-    const titles = ["Nvidia unveils chip A", "Nvidia unveils chip B", "Nvidia unveils chip C", "Nvidia unveils chip D"];
+    // earnings events with the ticker only in the summary: consequence 0.35 each
+    const titles = ["Chip earnings preview A", "Chip earnings preview B", "Chip earnings preview C", "Chip earnings preview D"];
     const results = [];
     for (const [i, title] of titles.entries()) {
-      results.push(await processItems(d, source, [{ externalId: String(i), title }]));
+      results.push(await processItems(d, source, [{ externalId: String(i), title, summary: "What to expect from Nvidia" }]));
     }
     expect(results.map((r) => r.alerts.length)).toEqual([0, 0, 1, 0]);
     expect(results[2]?.alerts[0]).toMatchObject({ reason: "accumulated" });
@@ -94,6 +94,12 @@ describe("http api", () => {
     expect((await app.inject({ url: "/observations?limit=5" })).json()[0].judgment.eventType).toBe("regulation");
     expect((await app.inject({ method: "DELETE", url: `/themes/${theme.json().id}` })).statusCode).toBe(204);
     expect((await app.inject({ method: "DELETE", url: "/themes/missing" })).statusCode).toBe(404);
+
+    const trade = await app.inject({ method: "POST", url: "/trades", payload: { name: "Gold", keywords: ["gold"], strengthens: ["record high"] } });
+    expect(trade.statusCode).toBe(201);
+    expect((await app.inject({ url: "/trades" })).json()).toMatchObject([{ name: "Gold", tickers: [], weakens: [] }]);
+    expect((await app.inject({ method: "POST", url: "/trades", payload: { keywords: ["x"] } })).statusCode).toBe(400);
+    expect((await app.inject({ method: "DELETE", url: `/trades/${trade.json().id}` })).statusCode).toBe(204);
   });
 });
 
@@ -152,6 +158,60 @@ describe("bark delivery", () => {
       url: "https://a.com/1",
     });
     expect(result.alerts[0]).toMatchObject({ delivered: true, deliveryError: null });
+  });
+});
+
+describe("slack delivery", () => {
+  it("posts trade alerts with direction to a Slack webhook", async () => {
+    const store = await memoryStore();
+    const source = await store.createSource({ type: "push", name: "test", config: {} });
+    await store.createTrade({ name: "AI infra buildout", thesis: "", keywords: ["data center"], tickers: ["MSFT"], strengthens: ["raises capex"], weakens: [] });
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return new Response("ok");
+    }) as unknown as typeof fetch;
+    const d = deps(store, { slackWebhookUrl: "https://hooks.slack.com/services/T/B/X", fetch: fetchImpl });
+    const result = await processItems(d, source, [{ externalId: "1", title: "MSFT raises capex for data center & power", url: "https://a.com/1" }]);
+
+    expect(result.alerts[0]).toMatchObject({ targetKey: expect.stringMatching(/^trade:/), delivered: true });
+    const text = JSON.parse(String(calls[0]?.init.body)).text as string;
+    expect(text).toContain("<https://a.com/1|MSFT raises capex for data center &amp; power>");
+    expect(text).toContain("AI infra buildout ↑ strengthening");
+  });
+});
+
+describe("noise controls", () => {
+  const rss = (titles: string[]) =>
+    `<?xml version="1.0"?><rss><channel>${titles
+      .map((t, i) => `<item><title>${t}</title><link>https://n.com/${encodeURIComponent(t)}</link><guid>${t}</guid><pubDate>${new Date(Date.now() - i * 60_000).toUTCString()}</pubDate></item>`)
+      .join("")}</channel></rss>`;
+
+  it("treats a source's first poll as a silent baseline", async () => {
+    const store = await memoryStore();
+    await store.createEntity({ name: "NVDA", kind: "ticker", aliases: ["Nvidia"] });
+    const source = await store.createSource({ type: "rss", name: "feed", config: { url: "https://n.com/feed" } });
+    const first = await runSource(deps(store, { sourceContext: { fetch: fakeFetch({ "https://n.com": rss(["Nvidia raises full-year guidance"]) }), userAgent: "t" } }), source);
+    expect(first).toMatchObject({ inserted: 1, alerts: [] });
+    const second = await runSource(
+      deps(store, { sourceContext: { fetch: fakeFetch({ "https://n.com": rss(["Nvidia cuts full-year guidance", "Nvidia raises full-year guidance"]) }), userAgent: "t" } }),
+      source,
+    );
+    expect(second).toMatchObject({ inserted: 1 });
+    expect(second.alerts).toHaveLength(1);
+  });
+
+  it("holds repeat alerts on a target during the cooldown unless very strong", async () => {
+    const { store, source } = await setup();
+    const policy = { alertThreshold: 0.6, weakSignalFloor: 0.2, accumulationThreshold: 1.2, accumulationWindowHours: 72, alertCooldownHours: 6, cooldownBypassScore: 0.95 };
+    const d = deps(store, { policy });
+    const result = await processItems(d, source, [
+      { externalId: "1", title: "Nvidia raises full-year guidance" },
+      { externalId: "2", title: "Nvidia cuts full-year guidance again" },
+      { externalId: "3", title: "Nvidia files for Chapter 11 bankruptcy" },
+    ]);
+    expect(result.inserted).toBe(3);
+    expect(result.alerts.map((a) => a.score)).toEqual([0.85, 0.95]);
   });
 });
 
