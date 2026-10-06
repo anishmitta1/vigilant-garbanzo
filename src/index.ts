@@ -31,6 +31,7 @@ export function createDeps(config: Config, store: Store): PipelineDeps {
     ntfy: config.ntfy,
     barkUrl: config.barkUrl,
     barkMinScore: config.barkMinScore,
+    barkRequiresMaterial: Boolean(config.llm),
     slackWebhookUrl: config.slackWebhookUrl,
     log: (msg) => console.log(`[mimir] ${msg}`),
   };

@@ -85,3 +85,32 @@ describe("llm scorer", () => {
     expect(j.rationale).toContain(marker);
   });
 });
+
+describe("llm gating", () => {
+  const ok = () => completion({ material: true, event_type: "guidance_change", consequence: 0.9, urgency: 0.7, matched_targets: ["entity:e1"], rationale: "r" });
+
+  it("skips the model for aggregator items with no tracked match", async () => {
+    const { calls, fetchImpl } = fakeLlm(ok);
+    const j = await createLlmScorer(llm, fetchImpl).judge({ ...obs, title: "Local bakery wins award" }, { ...source, type: "google-news" }, watchlist);
+    expect(calls).toHaveLength(0);
+    expect(j.scorer).toBe("heuristic");
+  });
+
+  it("always sends primary-source items and maps the material verdict", async () => {
+    const { calls, fetchImpl } = fakeLlm(ok);
+    const j = await createLlmScorer(llm, fetchImpl).judge({ ...obs, title: "Modifying the Scope of Additional Duties" }, source, watchlist);
+    expect(calls).toHaveLength(1);
+    expect(j.material).toBe(true);
+  });
+
+  it("falls back to the heuristic once the daily cap is reached", async () => {
+    const { calls, fetchImpl } = fakeLlm(ok);
+    const scorer = createLlmScorer({ ...llm, maxCallsPerDay: 1 }, fetchImpl);
+    await scorer.judge(obs, source, watchlist);
+    const second = await scorer.judge(obs, source, watchlist);
+    expect(calls).toHaveLength(1);
+    expect(second.scorer).toBe("heuristic");
+    expect(second.material).toBeUndefined();
+    expect(second.rationale).toContain("daily cap");
+  });
+});

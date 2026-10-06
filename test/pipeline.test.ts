@@ -249,6 +249,23 @@ describe("bark gating", () => {
   });
 });
 
+describe("bark materiality", () => {
+  it("does not push heuristic judgments to Bark when materiality is required", async () => {
+    const { store, source } = await setup();
+    let pushes = 0;
+    const fetchImpl = (async () => {
+      pushes++;
+      return new Response("{}");
+    }) as unknown as typeof fetch;
+    const d = deps(store, { barkUrl: "https://api.day.app/KEY/", barkRequiresMaterial: true, fetch: fetchImpl });
+    const result = await processItems(d, source, [{ externalId: "1", title: "Nvidia files for Chapter 11 bankruptcy" }]);
+    expect(result.alerts).toHaveLength(1);
+    expect(pushes).toBe(0);
+    const [stored] = await store.listAlerts(1);
+    expect(stored?.judgment.material).toBeUndefined();
+  });
+});
+
 describe("story grouping", () => {
   it("recognises the same story across outlets", () => {
     expect(

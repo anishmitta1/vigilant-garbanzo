@@ -180,6 +180,7 @@ function toJudgment(r: Row): Judgment {
     urgency: Number(r.urgency),
     matches: parse(r.matches, []),
     rationale: s(r.rationale),
+    ...(r.material === null || r.material === undefined ? {} : { material: Number(r.material) === 1 }),
     createdAt: s(r.created_at),
   };
 }
@@ -213,6 +214,10 @@ export class Store {
   async migrate(): Promise<void> {
     await this.client.execute("PRAGMA foreign_keys = ON");
     for (const sql of MIGRATIONS) await this.client.execute(sql);
+    const judgmentCols = await this.all("PRAGMA table_info(judgments)");
+    if (!judgmentCols.some((c) => c.name === "material")) {
+      await this.client.execute("ALTER TABLE judgments ADD COLUMN material INTEGER");
+    }
   }
 
   private async all(sql: string, args: InValue[] = []): Promise<Row[]> {
@@ -426,8 +431,8 @@ export class Store {
     await this.client.batch(
       [
         {
-          sql: `INSERT INTO judgments (id, observation_id, scorer, event_type, consequence, urgency, matches, rationale, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          sql: `INSERT INTO judgments (id, observation_id, scorer, event_type, consequence, urgency, matches, rationale, material, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           args: [
             j.id,
             j.observationId,
@@ -437,6 +442,7 @@ export class Store {
             j.urgency,
             json(j.matches),
             j.rationale,
+            j.material === undefined ? null : j.material ? 1 : 0,
             j.createdAt,
           ],
         },

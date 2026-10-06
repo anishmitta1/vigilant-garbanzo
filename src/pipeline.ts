@@ -36,6 +36,8 @@ export interface PipelineDeps {
   barkUrl?: string;
   /** Bark is the "drop everything" channel: only direct alerts at or above this score. */
   barkMinScore?: number;
+  /** With an LLM configured, Bark also requires an explicit material=true verdict (heuristic fallbacks never push). */
+  barkRequiresMaterial?: boolean;
   slackWebhookUrl?: string;
   fetch?: typeof fetch;
   log?: (msg: string) => void;
@@ -118,7 +120,11 @@ export async function processItems(
     const { webhookUrl, ntfy, barkUrl, slackWebhookUrl } = deps;
     if (webhookUrl) channels.push(() => deliverWebhook(webhookUrl, payload, deps.fetch));
     if (ntfy) channels.push(() => deliverNtfy(ntfy, payload, deps.fetch));
-    if (barkUrl && alert.reason === "direct" && alert.score >= (deps.barkMinScore ?? 0)) {
+    const barkWorthy =
+      alert.reason === "direct" &&
+      alert.score >= (deps.barkMinScore ?? 0) &&
+      (!deps.barkRequiresMaterial || judgment.material === true);
+    if (barkUrl && barkWorthy) {
       channels.push(() => deliverBark(barkUrl, payload, deps.fetch));
     }
     if (slackWebhookUrl) channels.push(() => deliverSlack(slackWebhookUrl, payload, deps.fetch));

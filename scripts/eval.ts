@@ -15,7 +15,16 @@ interface Case {
 
 const cases = JSON.parse(readFileSync(new URL("../test/fixtures/eval.json", import.meta.url), "utf8")) as Case[];
 const config = loadConfig();
-const scorer = config.llm ? createLlmScorer(config.llm) : heuristicScorer;
+const tokens = { calls: 0, prompt: 0, completion: 0 };
+const countingFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+  const res = await fetch(input, init);
+  const body = (await res.clone().json().catch(() => ({}))) as { usage?: { prompt_tokens?: number; completion_tokens?: number } };
+  tokens.calls++;
+  tokens.prompt += body.usage?.prompt_tokens ?? 0;
+  tokens.completion += body.usage?.completion_tokens ?? 0;
+  return res;
+}) as typeof fetch;
+const scorer = config.llm ? createLlmScorer({ ...config.llm, maxCallsPerDay: undefined }, countingFetch) : heuristicScorer;
 const minScore = config.barkMinScore;
 
 let tp = 0;
@@ -28,8 +37,21 @@ for (const c of cases) {
   for (const t of PRESET_TRADES) await store.createTrade({ ...t, preset: true });
   const weight = DEFAULT_SOURCES.find((s) => s.name === c.source)?.weight ?? 1;
   const source = await store.createSource({ type: "push", name: c.source, config: {}, weight });
-  const result = await processItems(deps(store, { scorer, policy: config }), source, [{ externalId: "1", title: c.title }]);
-  const push = result.alerts.find((a) => a.reason === "direct" && a.score >= minScore);
+  let pushed = false;
+  const fakeBark = (async () => {
+    pushed = true;
+    return new Response("{}");
+  }) as unknown as typeof fetch;
+  const d = deps(store, {
+    scorer,
+    policy: config,
+    barkUrl: "https://bark.invalid/eval",
+    barkMinScore: minScore,
+    barkRequiresMaterial: Boolean(config.llm),
+    fetch: fakeBark,
+  });
+  const result = await processItems(d, source, [{ externalId: "1", title: c.title }]);
+  const push = pushed ? result.alerts[0] : undefined;
   if (push && c.label === "alert") tp++;
   if (push && c.label === "noise") fp++;
   if (!push && c.label === "alert") fn++;
@@ -40,4 +62,5 @@ console.log(lines.join("\n"));
 const precision = tp + fp === 0 ? 1 : tp / (tp + fp);
 const recall = tp / (tp + fn);
 console.log(`\nscorer=${scorer.name} barkMinScore=${minScore} cases=${cases.length}`);
+if (config.llm) console.log(`llm calls=${tokens.calls} prompt_tokens=${tokens.prompt} completion_tokens=${tokens.completion}`);
 console.log(`bark pushes: ${tp + fp}  precision=${precision.toFixed(2)}  recall=${recall.toFixed(2)}`);

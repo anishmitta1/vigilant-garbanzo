@@ -96,6 +96,8 @@ export interface Judgment {
   urgency: number;
   matches: TargetMatch[];
   rationale: string;
+  /** LLM verdict: would a PM on a tracked trade change their view? Undefined for heuristic judgments. */
+  material?: boolean;
   createdAt: string;
 }
 
