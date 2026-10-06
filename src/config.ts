@@ -26,6 +26,9 @@ export interface Config {
   materialMinScore: number;
   storyWindowHours: number;
   seedDefaults: boolean;
+  /** Daily Bark digest at this local time ("HH:MM" in `digestTimeZone`); unset disables it. */
+  digestTime?: string;
+  digestTimeZone: string;
   llm?: { apiKey: string; baseUrl: string; model: string; maxCallsPerDay?: number; reasoning?: string; maxTokens?: number };
 }
 
@@ -38,6 +41,23 @@ function num(value: string | undefined, fallback: number): number {
 
 function str(value: string | undefined): string | undefined {
   return value === undefined || value === "" ? undefined : value;
+}
+
+function digestTime(value: string | undefined): string | undefined {
+  if (value === undefined) return "16:00";
+  if (value === "" || value === "off") return undefined;
+  const m = /^(\d{1,2}):(\d{2})$/.exec(value);
+  if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) throw new Error(`Invalid DIGEST_TIME (want HH:MM): ${value}`);
+  return `${m[1]!.padStart(2, "0")}:${m[2]}`;
+}
+
+function timeZone(value: string): string {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+  } catch {
+    throw new Error(`Invalid DIGEST_TZ: ${value}`);
+  }
+  return value;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -67,6 +87,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     materialMinScore: num(env.MATERIAL_MIN_SCORE, 0.5),
     storyWindowHours: num(env.STORY_WINDOW_HOURS, 48),
     seedDefaults: env.SEED_DEFAULTS !== "false",
+    digestTime: digestTime(env.DIGEST_TIME),
+    digestTimeZone: timeZone(str(env.DIGEST_TZ) ?? "America/Los_Angeles"),
     llm: llmKey
       ? {
           apiKey: llmKey,

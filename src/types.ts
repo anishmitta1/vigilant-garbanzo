@@ -98,8 +98,12 @@ export interface Judgment {
   rationale: string;
   /** LLM verdict: would a PM on a tracked trade change their view? Undefined for heuristic judgments. */
   material?: boolean;
+  /** Why an eligible-looking item didn't alert: backlog, a source's first poll, a target cooldown, or a story already alerted. */
+  held?: HeldReason;
   createdAt: string;
 }
+
+export type HeldReason = "stale" | "baseline" | "cooldown" | "same_story";
 
 export type AlertReason = "direct" | "accumulated";
 

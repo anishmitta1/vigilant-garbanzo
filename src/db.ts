@@ -5,6 +5,7 @@ import type {
   AlertReason,
   Entity,
   EntityKind,
+  HeldReason,
   Judgment,
   Observation,
   Source,
@@ -98,6 +99,7 @@ const MIGRATIONS = [
     preset INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 ];
 
 const json = (v: unknown): string => JSON.stringify(v);
@@ -181,6 +183,7 @@ function toJudgment(r: Row): Judgment {
     matches: parse(r.matches, []),
     rationale: s(r.rationale),
     ...(r.material === null || r.material === undefined ? {} : { material: Number(r.material) === 1 }),
+    ...(r.held ? { held: s(r.held) as HeldReason } : {}),
     createdAt: s(r.created_at),
   };
 }
@@ -208,6 +211,16 @@ export type NewSource = Pick<Source, "type" | "name" | "config"> &
   Partial<Pick<Source, "enabled" | "weight" | "pollIntervalSeconds">>;
 export type NewObservation = Omit<Observation, "id" | "fetchedAt"> & { raw?: unknown };
 
+/** A judgment with the context the daily digest needs. */
+export interface DigestRow {
+  judgment: Judgment;
+  title: string;
+  url: string | null;
+  publishedAt: string | null;
+  sourceName: string;
+  alerted: boolean;
+}
+
 export class Store {
   constructor(readonly client: Client) {}
 
@@ -217,6 +230,9 @@ export class Store {
     const judgmentCols = await this.all("PRAGMA table_info(judgments)");
     if (!judgmentCols.some((c) => c.name === "material")) {
       await this.client.execute("ALTER TABLE judgments ADD COLUMN material INTEGER");
+    }
+    if (!judgmentCols.some((c) => c.name === "held")) {
+      await this.client.execute("ALTER TABLE judgments ADD COLUMN held TEXT");
     }
   }
 
@@ -431,8 +447,8 @@ export class Store {
     await this.client.batch(
       [
         {
-          sql: `INSERT INTO judgments (id, observation_id, scorer, event_type, consequence, urgency, matches, rationale, material, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          sql: `INSERT INTO judgments (id, observation_id, scorer, event_type, consequence, urgency, matches, rationale, material, held, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           args: [
             j.id,
             j.observationId,
@@ -443,6 +459,7 @@ export class Store {
             json(j.matches),
             j.rationale,
             j.material === undefined ? null : j.material ? 1 : 0,
+            j.held ?? null,
             j.createdAt,
           ],
         },
@@ -453,6 +470,10 @@ export class Store {
       ],
       "write",
     );
+  }
+
+  async markHeld(judgmentId: string, reason: HeldReason): Promise<void> {
+    await this.run("UPDATE judgments SET held = ? WHERE id = ?", [reason, judgmentId]);
   }
 
   private async judgmentsByIds(ids: InValue[]): Promise<Map<string, Judgment>> {
@@ -516,6 +537,38 @@ export class Store {
 
   async markAlertDelivery(id: string, error: string | null): Promise<void> {
     await this.run("UPDATE alerts SET delivered = ?, delivery_error = ? WHERE id = ?", [error ? 0 : 1, error, id]);
+  }
+
+  /** Judgments created after `since`, highest consequence first, flagged if they produced an alert. */
+  async digestRows(since: string): Promise<DigestRow[]> {
+    const rows = await this.all(
+      `SELECT j.*, o.title AS o_title, o.url AS o_url, o.published_at AS o_published_at, s.name AS s_name,
+              EXISTS (SELECT 1 FROM alerts a WHERE a.judgment_id = j.id) AS alerted
+       FROM judgments j
+       JOIN observations o ON o.id = j.observation_id
+       JOIN sources s ON s.id = o.source_id
+       WHERE j.created_at > ?
+       ORDER BY j.consequence DESC`,
+      [since],
+    );
+    return rows.map((r) => ({
+      judgment: toJudgment(r),
+      title: s(r.o_title),
+      url: sOrNull(r.o_url),
+      publishedAt: sOrNull(r.o_published_at),
+      sourceName: s(r.s_name),
+      alerted: Number(r.alerted) === 1,
+    }));
+  }
+
+  // Meta (small key/value state, e.g. when the digest last went out)
+  async getMeta(key: string): Promise<string | null> {
+    const [row] = await this.all("SELECT value FROM meta WHERE key = ?", [key]);
+    return row ? s(row.value) : null;
+  }
+
+  async setMeta(key: string, value: string): Promise<void> {
+    await this.run("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [key, value]);
   }
 
   async listAlerts(limit = 50): Promise<(Alert & { observation: Observation; judgment: Judgment })[]> {

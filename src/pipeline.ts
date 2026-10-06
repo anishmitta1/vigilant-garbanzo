@@ -11,10 +11,11 @@ import {
 import type { NtfyConfig } from "./config.js";
 import type { Store } from "./db.js";
 import { normalize, sameStory } from "./preprocess.js";
+import { heuristicScorer } from "./scoring/heuristic.js";
 import type { Scorer } from "./scoring/types.js";
 import { getAdapter } from "./sources/registry.js";
 import type { SourceContext } from "./sources/types.js";
-import type { Alert, RawItem, Source } from "./types.js";
+import type { Alert, HeldReason, RawItem, Source } from "./types.js";
 import { errorMessage, newId, nowIso } from "./util.js";
 
 export interface PipelineDeps {
@@ -84,15 +85,13 @@ export async function processItems(
     const observation = await store.insertObservation(draft);
     result.inserted++;
 
-    const judgment = { ...(await scorer.judge(observation, source, watchlist)), id: newId(), observationId: observation.id, createdAt: nowIso() };
-    // Backlog (e.g. a feed's history on first poll) is stored and scored but never alerts or accumulates.
-    if (isStale(observation.publishedAt, policy.maxAlertAgeHours)) {
-      await store.insertJudgment(judgment, new Date(observation.publishedAt!).toISOString());
-      continue;
-    }
-    // A new source's first batch is its baseline: stored and scored, never alerts or accumulates.
-    if (opts.baseline) {
-      await store.insertJudgment(judgment, BASELINE_SIGNAL_AT);
+    // Backlog (e.g. a feed's history on first poll) and a new source's first batch are stored and scored
+    // but never alert or accumulate, so they get the free heuristic rather than a model call.
+    const held: HeldReason | undefined = isStale(observation.publishedAt, policy.maxAlertAgeHours) ? "stale" : opts.baseline ? "baseline" : undefined;
+    const scored = await (held ? heuristicScorer : scorer).judge(observation, source, watchlist);
+    const judgment = { ...scored, ...(held ? { held } : {}), id: newId(), observationId: observation.id, createdAt: nowIso() };
+    if (held) {
+      await store.insertJudgment(judgment, held === "stale" ? new Date(observation.publishedAt!).toISOString() : BASELINE_SIGNAL_AT);
       continue;
     }
     const priorWeakSums = new Map<string, number>();
@@ -103,8 +102,14 @@ export async function processItems(
 
     const decision = decideAlert(judgment, priorWeakSums, policy);
     if (!decision) continue;
-    if (await coolingDown(store, decision, policy)) continue;
-    if (await alreadyAlertedStory(store, observation.title, policy.storyWindowHours)) continue;
+    if (await coolingDown(store, decision, policy)) {
+      await store.markHeld(judgment.id, "cooldown");
+      continue;
+    }
+    if (await alreadyAlertedStory(store, observation.title, policy.storyWindowHours)) {
+      await store.markHeld(judgment.id, "same_story");
+      continue;
+    }
     const alert = await store.insertAlert({
       observationId: observation.id,
       judgmentId: judgment.id,
