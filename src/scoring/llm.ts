@@ -15,9 +15,6 @@ const ResponseSchema = z.object({
   material: z.boolean().optional(),
 });
 
-/** High-volume sources whose items only reach the model if the heuristic matched a tracked target. */
-const AGGREGATOR_TYPES = new Set(["google-news", "hackernews", "reddit", "sec-edgar"]);
-
 const SYSTEM_PROMPT = `You are a fast triage model for an investor alerting system.
 Decide whether a news item MATERIALLY CHANGES something the investor tracks, not merely whether it is related.
 Some targets are popular trades with a thesis plus signals that strengthen or weaken it.
@@ -36,7 +33,6 @@ export function createLlmScorer(llm: NonNullable<Config["llm"]>, fetchImpl: type
     name: `llm:${llm.model}`,
     async judge(observation: Observation, source: Source, watchlist: Watchlist): Promise<JudgmentDraft> {
       const baseline = await heuristicScorer.judge(observation, source, watchlist);
-      if (AGGREGATOR_TYPES.has(source.type) && baseline.matches.length === 0) return baseline;
       const targets = [
         ...watchlist.themes.map((t) => ({ key: `theme:${t.id}`, name: t.name, description: t.description })),
         ...watchlist.entities.map((e) => ({ key: `entity:${e.id}`, name: e.name, kind: e.kind, aliases: e.aliases })),
