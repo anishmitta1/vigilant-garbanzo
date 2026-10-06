@@ -47,13 +47,8 @@ export function digestDue(now: Date, schedule: DigestSchedule, lastSentAt: strin
 
 const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 
-/** Model calls skipped because the daily cap was hit or the call failed (heuristic fallback). */
-const modelSkipped = (row: DigestRow): string | null =>
-  row.judgment.rationale.includes("(LLM daily cap reached)")
-    ? "no model: daily cap"
-    : row.judgment.rationale.includes("(LLM fallback")
-      ? "no model: error"
-      : null;
+/** Model calls that failed, e.g. provider error or spend limit (heuristic fallback). */
+const modelSkipped = (row: DigestRow): string | null => (row.judgment.rationale.includes("(LLM fallback") ? "no model: error" : null);
 
 function nearMissReason(row: DigestRow): string {
   const { material, held } = row.judgment;
@@ -91,7 +86,7 @@ export function buildDigest(rows: DigestRow[], opts: { dateLabel: string; failin
     }
   }
   lines.push("", `Read ${rows.length} items · ${modelCalls} model calls`);
-  if (skipped > 0) lines.push(`⚠ ${skipped} items missed the model (daily cap or errors) and could not alert`);
+  if (skipped > 0) lines.push(`⚠ ${skipped} items missed the model (call errors or spend limit) and could not alert`);
   if (opts.failingSources.length > 0) lines.push(`Failing sources: ${opts.failingSources.join(", ")}`);
 
   return {

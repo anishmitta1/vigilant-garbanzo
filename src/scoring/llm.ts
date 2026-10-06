@@ -32,18 +32,11 @@ For trades, say in the rationale what changed and which way it pushes the trade.
  * Falls back to the heuristic scorer on any error so a model outage never drops items.
  */
 export function createLlmScorer(llm: NonNullable<Config["llm"]>, fetchImpl: typeof fetch = fetch): Scorer {
-  const usage = { day: "", calls: 0 };
   return {
     name: `llm:${llm.model}`,
     async judge(observation: Observation, source: Source, watchlist: Watchlist): Promise<JudgmentDraft> {
       const baseline = await heuristicScorer.judge(observation, source, watchlist);
       if (AGGREGATOR_TYPES.has(source.type) && baseline.matches.length === 0) return baseline;
-      const today = new Date().toISOString().slice(0, 10);
-      if (usage.day !== today) Object.assign(usage, { day: today, calls: 0 });
-      if (llm.maxCallsPerDay !== undefined && usage.calls >= llm.maxCallsPerDay) {
-        return { ...baseline, rationale: `${baseline.rationale} (LLM daily cap reached)` };
-      }
-      usage.calls++;
       const targets = [
         ...watchlist.themes.map((t) => ({ key: `theme:${t.id}`, name: t.name, description: t.description })),
         ...watchlist.entities.map((e) => ({ key: `entity:${e.id}`, name: e.name, kind: e.kind, aliases: e.aliases })),

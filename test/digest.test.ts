@@ -97,7 +97,7 @@ describe("maybeSendDigest", () => {
       scorer: "heuristic",
       consequence: 0.35,
       matches: trade,
-      rationale: "keyword match (LLM daily cap reached)",
+      rationale: "keyword match (LLM fallback: HTTP 402)",
     });
 
     const pushes: Record<string, string>[] = [];
@@ -115,7 +115,7 @@ describe("maybeSendDigest", () => {
     expect(pushes[0]?.body).toContain("• Fed cuts rates 50bp — Yield curve unwinding ↑ strengthening");
     expect(pushes[0]?.body).toContain("0.40 Fed governor speaks at conference [not material]");
     expect(pushes[0]?.body).toContain("Fed cuts 50bp - Reuters [same story already alerted]");
-    expect(pushes[0]?.body).toContain("Treasury refunding update [no model: daily cap]");
+    expect(pushes[0]?.body).toContain("Treasury refunding update [no model: error]");
     expect(pushes[0]?.body).toContain("Read 6 items · 5 model calls");
     expect(pushes[0]?.body).toContain("⚠ 1 items missed the model");
     expect(pushes[0]?.body).not.toContain("Unrelated");
