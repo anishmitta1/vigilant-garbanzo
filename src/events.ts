@@ -1,6 +1,8 @@
 // Groups observations into events (one real-world development reported by many outlets) and decides which of an
 // item's pillar impacts are new. Exact copies never get here (preprocess dedupes them); a local embedding model finds
 // similar open events for free; the model, in the call it already makes per item, decides the ambiguous cases.
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { splitOutlet } from "./alerts.js";
 import type { EventSummary, Store } from "./db.js";
 import type { Scorer } from "./scoring/types.js";
@@ -31,7 +33,10 @@ export function createLocalEmbedder(model = "Xenova/all-MiniLM-L6-v2"): Embedder
     name: model,
     async embed(text) {
       extractor ??= import("@huggingface/transformers").then(
-        async (t) => (await t.pipeline("feature-extraction", model, { dtype: "q8" })) as unknown as Extractor,
+        async (t) => (await t.pipeline("feature-extraction", model, {
+          dtype: "q8",
+          cache_dir: join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "mimir", "models"),
+        })) as unknown as Extractor,
       );
       const out = await (await extractor)(text, { pooling: "mean", normalize: true });
       return Float32Array.from(out.data);
