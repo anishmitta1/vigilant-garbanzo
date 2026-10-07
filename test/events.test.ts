@@ -1,10 +1,45 @@
-import { describe, expect, it } from "vitest";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { pipeline } from "@huggingface/transformers";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildDigest, pillarGaps } from "../src/digest.js";
-import { EventIndex, findCandidates, newImpacts, warmEventMemory, type Embedder } from "../src/events.js";
+import { createLocalEmbedder, EventIndex, findCandidates, newImpacts, warmEventMemory, type Embedder } from "../src/events.js";
 import { processItems } from "../src/pipeline.js";
 import type { JudgeContext, JudgmentDraft, Scorer } from "../src/scoring/types.js";
 import type { ImpactDraft, Observation } from "../src/types.js";
 import { deps, memoryStore } from "./helpers.js";
+
+vi.mock("@huggingface/transformers", () => ({
+  pipeline: vi.fn(async () => async () => ({ data: Float32Array.from([0.6, 0.8]) })),
+}));
+
+describe("local model cache", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.clearAllMocks();
+  });
+
+  it("caches in the user's home rather than the release directory", async () => {
+    vi.stubEnv("XDG_CACHE_HOME", undefined);
+    await createLocalEmbedder().embed("headline");
+    expect(pipeline).toHaveBeenCalledWith("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
+      dtype: "q8",
+      cache_dir: join(homedir(), ".cache", "mimir", "models"),
+    });
+  });
+
+  it("respects XDG_CACHE_HOME and loads the model only once per embedder", async () => {
+    vi.stubEnv("XDG_CACHE_HOME", "/persistent/cache");
+    const embedder = createLocalEmbedder();
+    expect(await embedder.embed("first")).toEqual(Float32Array.from([0.6, 0.8]));
+    await embedder.embed("second");
+    expect(pipeline).toHaveBeenCalledTimes(1);
+    expect(pipeline).toHaveBeenCalledWith("feature-extraction", "Xenova/all-MiniLM-L6-v2", {
+      dtype: "q8",
+      cache_dir: join("/persistent/cache", "mimir", "models"),
+    });
+  });
+});
 
 /** Bag-of-words vectors: shared words mean similar vectors, which is all grouping needs from the real model. */
 const wordEmbedder: Embedder = {
