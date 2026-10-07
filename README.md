@@ -101,7 +101,7 @@ src/
 
 | type | what it covers | config |
 | --- | --- | --- |
-| `rss` | Any RSS/Atom/RDF feed: news, Substack, blogs, Reddit `.rss`, YouTube channels, arXiv, GitHub `releases.atom`, central banks | `{ url, watchedOnly? }` |
+| `rss` | Any RSS/Atom/RDF feed: news, Substack, blogs, Reddit `.rss`, YouTube channels, arXiv, GitHub `releases.atom`, central banks | `{ url, watchedOnly?, triage? }` |
 | `google-news` | Google News search (supports `site:`, `when:7d`, `OR`) | `{ query, language?, country? }` |
 | `sec-edgar` | SEC filings, market-wide or for one company | `{ forms?: ["8-K"], cik?, count?, watchedOnly? }` |
 | `hackernews` | HN stories via Algolia | `{ query?, minPoints?, limit? }` |
@@ -111,7 +111,12 @@ src/
 | `html` | Any HTML listing page via CSS selectors (press releases, regulators, IR pages) | `{ url, itemSelector, fields: { title?, link?, summary?, date?, dateAttribute? } }` |
 | `push` | Anything that can POST to `/ingest` (scripts, other scrapers, Zapier) | `{}` |
 
-Fast first-disclosure sources are filtered to watched names: with `watchedOnly: true`, an item is kept only if its title names a trade entity, alias or ticker, or a watchlist entity (all-caps names such as `CAT` match case-sensitively). Everything else is dropped before storage, so it never costs a model call. The defaults poll SEC 8-Ks (market-wide current feed), PR Newswire, GlobeNewswire (public companies) and Business Wire earnings this way every 60 seconds, ahead of Google News coverage of the same release. They replace the old unfiltered "SEC EDGAR: latest 8-K" default, which is disabled on start. Re-reports of a release that arrive later via Google join its event as usual.
+Fast first-disclosure sources are polled every 60 seconds, ahead of Google News coverage of the same release:
+
+- **SEC 8-Ks** (market-wide current feed) use `watchedOnly: true`: an item is kept only if its title names a trade entity, alias or ticker, or a watchlist entity (all-caps names such as `CAT` match case-sensitively). 8-K titles carry only the filer name, so there's nothing else to judge. Everything else is dropped before storage.
+- **PR Newswire, GlobeNewswire (public companies) and Business Wire earnings** use `triage: true`: each poll's new headlines go to the model in one batched call (up to 50 per call) that only asks which could matter to any trade, including companies the trade doesn't name. Kept items get the full judgment; the rest are stored with `held: "triaged"` and never alert. Triage fails open: if the call errors, every item gets the full judgment. A source's first poll is silent and skips triage. On a live sample, triage kept 23 of 110 releases at about $0.000006 per release, versus about $0.00076 per full judgment.
+
+These replace the old unfiltered "SEC EDGAR: latest 8-K" default and the earlier watched-company wire feeds, which are disabled on start. Re-reports of a release that arrive later via Google join its event as usual.
 
 To add a source type, add a file in `src/sources/` exporting `defineAdapter({ type, description, configSchema, fetch })` and register it in `registry.ts`.
 

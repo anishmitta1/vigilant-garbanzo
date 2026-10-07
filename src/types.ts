@@ -134,12 +134,12 @@ export interface Judgment {
   event?: EventVerdict;
   /** How the item moves each trade's pillars (pillarId null: relevant to the trade but fits no pillar). */
   impacts?: ImpactDraft[];
-  /** Why an eligible-looking item didn't alert: backlog, a source's first poll, a target cooldown, or a story already alerted. */
+  /** Why an eligible-looking item didn't alert: backlog, a source's first poll, a target cooldown, a story already alerted, or screened out by triage. */
   held?: HeldReason;
   createdAt: string;
 }
 
-export type HeldReason = "stale" | "baseline" | "cooldown" | "same_story" | "same_event";
+export type HeldReason = "stale" | "baseline" | "cooldown" | "same_story" | "same_event" | "triaged";
 
 export interface EventVerdict {
   /** Id of the candidate event this item reports on, or null for a new development. */
