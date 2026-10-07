@@ -14,10 +14,11 @@ import type { PillarEvidence, Store } from "./db.js";
 import { embedText, findCandidates, placeInEvent, type EventCandidate, type EventIndex, type Placement } from "./events.js";
 import { normalize, sameStory } from "./preprocess.js";
 import { heuristicScorer, namesWatched } from "./scoring/heuristic.js";
+import type { Triage } from "./scoring/triage.js";
 import type { Scorer } from "./scoring/types.js";
 import { getAdapter } from "./sources/registry.js";
 import type { SourceContext } from "./sources/types.js";
-import { isMajor, type Alert, type HeldReason, type RawItem, type Source } from "./types.js";
+import { isMajor, type Alert, type HeldReason, type RawItem, type Source, type Watchlist } from "./types.js";
 import { errorMessage, newId } from "./util.js";
 
 export interface PipelineDeps {
@@ -35,6 +36,8 @@ export interface PipelineDeps {
     /** "events": alert on new major pillar impacts instead of material verdicts. */
     alertMode?: "legacy" | "events";
   };
+  /** Batched pre-screen for sources with `triage: true`; without it their items all get the full judgment. */
+  triage?: Triage;
   /** Event grouping; without it, items are judged one by one as before. */
   events?: EventIndex;
   sourceContext: SourceContext;
@@ -71,7 +74,7 @@ export async function processItems(
   deps: PipelineDeps,
   source: Source,
   items: RawItem[],
-  opts: { baseline?: boolean } = {},
+  opts: { baseline?: boolean; triage?: boolean } = {},
 ): Promise<RunResult> {
   const { store, scorer, policy } = deps;
   const result: RunResult = { sourceId: source.id, fetched: items.length, inserted: 0, duplicates: 0, alerts: [] };
@@ -88,6 +91,8 @@ export async function processItems(
   const { events } = deps;
   const evidence: PillarEvidence[] = events ? await store.impactsSince(new Date(nowMs - EVIDENCE_WINDOW_MS).toISOString()) : [];
   const pillarNames = new Map(watchlist.trades.flatMap((t) => t.pillars.map((p) => [p.id, p.statement] as const)));
+  const screenedOut =
+    opts.triage && deps.triage && !opts.baseline ? await screenOut(deps, deps.triage, items, source.id, titleSince, watchlist, nowMs) : new Set<RawItem>();
 
   for (const item of items) {
     const draft = normalize(source.id, item);
@@ -98,6 +103,11 @@ export async function processItems(
     }
     const observation = await store.insertObservation(draft, at);
     result.inserted++;
+    if (screenedOut.has(item)) {
+      const scored = await heuristicScorer.judge(observation, source, watchlist);
+      await store.insertJudgment({ ...scored, held: "triaged", id: newId(), observationId: observation.id, createdAt: at }, BASELINE_SIGNAL_AT);
+      continue;
+    }
 
     let vector: Float32Array | null = null;
     let candidates: EventCandidate[] = [];
@@ -202,7 +212,8 @@ export async function runSource(deps: PipelineDeps, source: Source): Promise<Run
     const fetched = await adapter.fetch(config, deps.sourceContext);
     const items = (config as { watchedOnly?: boolean }).watchedOnly ? await onlyWatched(deps.store, fetched) : fetched;
     const baseline = !(await deps.store.hasObservations(source.id));
-    const result = await processItems(deps, source, items, { baseline });
+    const triage = (config as { triage?: boolean }).triage;
+    const result = await processItems(deps, source, items, { baseline, triage });
     await deps.store.recordSourceRun(source.id, null);
     deps.log?.(`${source.name}: fetched ${result.fetched}, new ${result.inserted}, alerts ${result.alerts.length}`);
     return result;
@@ -212,6 +223,29 @@ export async function runSource(deps: PipelineDeps, source: Source): Promise<Run
     deps.log?.(`${source.name}: error ${error}`);
     return { sourceId: source.id, fetched: 0, inserted: 0, duplicates: 0, alerts: [], error };
   }
+}
+
+/** New, fresh items the triage call rejected: stored for the record but never judged in full. */
+async function screenOut(
+  deps: PipelineDeps,
+  triage: Triage,
+  items: RawItem[],
+  sourceId: string,
+  titleSince: string | null,
+  watchlist: Watchlist,
+  nowMs: number,
+): Promise<Set<RawItem>> {
+  const fresh: { item: RawItem; title: string; summary: string }[] = [];
+  for (const item of items) {
+    const draft = normalize(sourceId, item);
+    if (!draft || isStale(draft.publishedAt, deps.policy.maxAlertAgeHours, nowMs)) continue;
+    if (!(await deps.store.isDuplicate(draft, titleSince))) fresh.push({ item, title: draft.title, summary: draft.summary });
+  }
+  if (fresh.length === 0) return new Set();
+  const keep = await triage(fresh, watchlist);
+  const dropped = fresh.filter((_, i) => keep[i] === false).map((f) => f.item);
+  deps.log?.(`triage: kept ${fresh.length - dropped.length} of ${fresh.length}`);
+  return new Set(dropped);
 }
 
 async function onlyWatched(store: Store, items: RawItem[]): Promise<RawItem[]> {

@@ -12,6 +12,8 @@ export const rssAdapter = defineAdapter({
     headers: z.record(z.string(), z.string()).optional(),
     /** Keep only items whose title names a watched company (for high-volume wires). */
     watchedOnly: z.boolean().default(false),
+    /** Screen new items with one batched model call per poll; only kept items get the full judgment. */
+    triage: z.boolean().default(false),
   }),
   async fetch(config, ctx) {
     return parseFeed(await httpGet(ctx, config.url, config.headers));

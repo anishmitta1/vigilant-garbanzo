@@ -82,8 +82,8 @@ export function medianLatency(rows: DigestRow[]): { minutes: number; n: number }
   return { minutes: xs.length % 2 ? xs[mid]! : Math.round((xs[mid - 1]! + xs[mid]!) / 2), n: xs.length };
 }
 
-// Backlog and first-poll items could never alert, so they aren't misses.
-const eligible = (r: DigestRow): boolean => r.judgment.held !== "stale" && r.judgment.held !== "baseline";
+// Backlog, first-poll and triaged-out items never got a full judgment, so they aren't misses.
+const eligible = (r: DigestRow): boolean => !["stale", "baseline", "triaged"].includes(r.judgment.held ?? "");
 
 export const isNearMiss = (r: DigestRow): boolean =>
   eligible(r) && !r.alerted && r.judgment.matches.length > 0 && (r.judgment.material === true || r.judgment.consequence >= NEAR_MISS_FLOOR);

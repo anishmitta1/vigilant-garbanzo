@@ -6,6 +6,7 @@ import { createLocalEmbedder, EventIndex, warmEventMemory } from "./events.js";
 import { addPresetPillars, DEFAULT_SOURCES, PRESET_PILLARS, PRESET_THEMES, PRESET_TRADES, RETIRED_SOURCES } from "./presets.js";
 import { heuristicScorer } from "./scoring/heuristic.js";
 import { createLlmScorer } from "./scoring/llm.js";
+import { createLlmTriage } from "./scoring/triage.js";
 import { buildServer } from "./server.js";
 import { errorMessage } from "./util.js";
 
@@ -33,6 +34,7 @@ export function createDeps(config: Config, store: Store): PipelineDeps {
   return {
     store,
     scorer: config.llm ? createLlmScorer(config.llm) : heuristicScorer,
+    triage: config.llm ? createLlmTriage(config.llm) : undefined,
     policy: config,
     events: config.eventGrouping ? new EventIndex(createLocalEmbedder()) : undefined,
     sourceContext: { fetch, userAgent: config.userAgent },
