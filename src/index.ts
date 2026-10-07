@@ -3,7 +3,7 @@ import { openStore, type Store } from "./db.js";
 import { maybeSendDigest } from "./digest.js";
 import { runDueSources, type PipelineDeps } from "./pipeline.js";
 import { createLocalEmbedder, EventIndex, warmEventMemory } from "./events.js";
-import { addPresetPillars, DEFAULT_SOURCES, PRESET_PILLARS, PRESET_THEMES, PRESET_TRADES } from "./presets.js";
+import { addPresetPillars, DEFAULT_SOURCES, PRESET_PILLARS, PRESET_THEMES, PRESET_TRADES, RETIRED_SOURCES } from "./presets.js";
 import { heuristicScorer } from "./scoring/heuristic.js";
 import { createLlmScorer } from "./scoring/llm.js";
 import { buildServer } from "./server.js";
@@ -22,6 +22,10 @@ async function seed(store: Store): Promise<void> {
   // Add any default source missing by name, so new defaults reach existing databases. Disable rather than delete to opt out.
   for (const s of DEFAULT_SOURCES) {
     if (!(await store.findSourceByName(s.name))) await store.createSource(s);
+  }
+  for (const name of RETIRED_SOURCES) {
+    const s = await store.findSourceByName(name);
+    if (s?.enabled) await store.setSourceEnabled(s.id, false);
   }
 }
 

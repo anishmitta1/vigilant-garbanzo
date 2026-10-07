@@ -354,8 +354,25 @@ const news = (name: string, query: string): NewSource => ({
   weight: 0.7,
 });
 
+const wire = (name: string, url: string): NewSource => ({
+  type: "rss",
+  name: `${name}: watched companies`,
+  config: { url, watchedOnly: true },
+  pollIntervalSeconds: 60,
+});
+
+/** Former defaults that seeding disables on existing databases. */
+export const RETIRED_SOURCES = [
+  // Market-wide 8-Ks: every filer's filing went to the model; replaced by the watched-company feed.
+  "SEC EDGAR: latest 8-K",
+];
+
 export const DEFAULT_SOURCES: NewSource[] = [
-  { type: "sec-edgar", name: "SEC EDGAR: latest 8-K", config: { forms: ["8-K"] } },
+  // First disclosures, filtered to watched companies so only their items reach the model; polled every minute.
+  { type: "sec-edgar", name: "SEC EDGAR: watched-company 8-K", config: { forms: ["8-K"], count: 100, watchedOnly: true }, pollIntervalSeconds: 60 },
+  wire("PR Newswire", "https://www.prnewswire.com/rss/news-releases-list.rss"),
+  wire("GlobeNewswire", "https://www.globenewswire.com/RssFeed/orgclass/1/feedTitle/GlobeNewswire%20-%20News%20about%20Public%20Companies"),
+  wire("Business Wire earnings", "https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeEF9YXA=="),
   { type: "rss", name: "Federal Reserve press releases", config: { url: "https://www.federalreserve.gov/feeds/press_all.xml" }, weight: 1.1 },
   { type: "federal-register", name: "Federal Register: rules", config: { documentTypes: ["RULE", "PRORULE"] } },
   { type: "hackernews", name: "Hacker News (100+ points)", config: { minPoints: 100 }, weight: 0.8 },
