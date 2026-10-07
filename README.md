@@ -101,15 +101,17 @@ src/
 
 | type | what it covers | config |
 | --- | --- | --- |
-| `rss` | Any RSS/Atom/RDF feed: news, Substack, blogs, Reddit `.rss`, YouTube channels, arXiv, GitHub `releases.atom`, central banks | `{ url }` |
+| `rss` | Any RSS/Atom/RDF feed: news, Substack, blogs, Reddit `.rss`, YouTube channels, arXiv, GitHub `releases.atom`, central banks | `{ url, watchedOnly? }` |
 | `google-news` | Google News search (supports `site:`, `when:7d`, `OR`) | `{ query, language?, country? }` |
-| `sec-edgar` | SEC filings, market-wide or for one company | `{ forms?: ["8-K"], cik?, count? }` |
+| `sec-edgar` | SEC filings, market-wide or for one company | `{ forms?: ["8-K"], cik?, count?, watchedOnly? }` |
 | `hackernews` | HN stories via Algolia | `{ query?, minPoints?, limit? }` |
 | `reddit` | Subreddit listings | `{ subreddit, sort?, minScore?, limit? }` |
 | `federal-register` | US rules, proposed rules, notices, presidential docs | `{ term?, agencies?, documentTypes? }` |
 | `json` | Any JSON API with dotted-path field mapping | `{ url, itemsPath, fields: { id?, title, url?, summary?, publishedAt? } }` |
 | `html` | Any HTML listing page via CSS selectors (press releases, regulators, IR pages) | `{ url, itemSelector, fields: { title?, link?, summary?, date?, dateAttribute? } }` |
 | `push` | Anything that can POST to `/ingest` (scripts, other scrapers, Zapier) | `{}` |
+
+Fast first-disclosure sources are filtered to watched names: with `watchedOnly: true`, an item is kept only if its title names a trade entity, alias or ticker, or a watchlist entity (all-caps names such as `CAT` match case-sensitively). Everything else is dropped before storage, so it never costs a model call. The defaults poll SEC 8-Ks (market-wide current feed), PR Newswire, GlobeNewswire (public companies) and Business Wire earnings this way every 60 seconds, ahead of Google News coverage of the same release. They replace the old unfiltered "SEC EDGAR: latest 8-K" default, which is disabled on start. Re-reports of a release that arrive later via Google join its event as usual.
 
 To add a source type, add a file in `src/sources/` exporting `defineAdapter({ type, description, configSchema, fetch })` and register it in `registry.ts`.
 

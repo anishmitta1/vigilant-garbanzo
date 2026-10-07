@@ -83,6 +83,23 @@ export function matchTrade(trade: Trade, title: string, summary: string): { stre
   return { strength, direction: up > down ? "strengthens" : down > up ? "weakens" : "mixed" };
 }
 
+const allCaps = (s: string): boolean => /\p{L}/u.test(s) && s === s.toUpperCase();
+
+/**
+ * Whether a title names a watched company, agency or ticker: a trade's entities and tickers, or a watchlist entity.
+ * All-caps names like "CAT" or "SEC" are case-sensitive so they don't match ordinary words.
+ */
+export function namesWatched(watchlist: Watchlist, title: string): boolean {
+  const names = [
+    ...watchlist.trades.flatMap((t) => [
+      ...t.entities.flatMap((e) => [e.name, ...e.aliases]).map((n) => [n, allCaps(n)] as const),
+      ...t.tickers.map((s) => [s, true] as const),
+    ]),
+    ...watchlist.entities.flatMap((e) => [[e.name, e.kind === "ticker" || allCaps(e.name)] as const, ...e.aliases.map((a) => [a, allCaps(a)] as const)]),
+  ];
+  return names.some(([term, caseSensitive]) => term.trim().length > 0 && termRegex(term, caseSensitive).test(title));
+}
+
 export function matchTargets(watchlist: Watchlist, title: string, summary: string): TargetMatch[] {
   const matches: TargetMatch[] = [];
   // Trades first so they win ties (sort is stable) and become the alert's primary target.

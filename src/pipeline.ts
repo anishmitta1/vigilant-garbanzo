@@ -13,7 +13,7 @@ import type { NtfyConfig } from "./config.js";
 import type { PillarEvidence, Store } from "./db.js";
 import { embedText, findCandidates, placeInEvent, type EventCandidate, type EventIndex, type Placement } from "./events.js";
 import { normalize, sameStory } from "./preprocess.js";
-import { heuristicScorer } from "./scoring/heuristic.js";
+import { heuristicScorer, namesWatched } from "./scoring/heuristic.js";
 import type { Scorer } from "./scoring/types.js";
 import { getAdapter } from "./sources/registry.js";
 import type { SourceContext } from "./sources/types.js";
@@ -199,7 +199,8 @@ export async function runSource(deps: PipelineDeps, source: Source): Promise<Run
   try {
     const adapter = getAdapter(source.type);
     const config = adapter.configSchema.parse(source.config);
-    const items = await adapter.fetch(config, deps.sourceContext);
+    const fetched = await adapter.fetch(config, deps.sourceContext);
+    const items = (config as { watchedOnly?: boolean }).watchedOnly ? await onlyWatched(deps.store, fetched) : fetched;
     const baseline = !(await deps.store.hasObservations(source.id));
     const result = await processItems(deps, source, items, { baseline });
     await deps.store.recordSourceRun(source.id, null);
@@ -211,6 +212,11 @@ export async function runSource(deps: PipelineDeps, source: Source): Promise<Run
     deps.log?.(`${source.name}: error ${error}`);
     return { sourceId: source.id, fetched: 0, inserted: 0, duplicates: 0, alerts: [], error };
   }
+}
+
+async function onlyWatched(store: Store, items: RawItem[]): Promise<RawItem[]> {
+  const watchlist = { themes: [], entities: await store.listEntities(), trades: await store.listTrades() };
+  return items.filter((item) => namesWatched(watchlist, item.title));
 }
 
 export function isDue(source: Source, defaultIntervalSeconds: number, now = Date.now()): boolean {

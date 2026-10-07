@@ -202,6 +202,17 @@ describe("noise controls", () => {
     expect(second.alerts).toHaveLength(1);
   });
 
+  it("keeps only items naming a watched company from watchedOnly sources", async () => {
+    const store = await memoryStore();
+    await store.createEntity({ name: "NVDA", kind: "ticker", aliases: ["Nvidia"] });
+    await store.createEntity({ name: "Caterpillar", kind: "company", aliases: ["CAT"] });
+    const source = await store.createSource({ type: "rss", name: "wire", config: { url: "https://w.com/feed", watchedOnly: true } });
+    const kept = ["8-K - NVIDIA CORP (0001045810) (Filer)", "NVDA added to index", "CATERPILLAR INC files annual report", "CAT raises outlook"];
+    const dropped = ["nvda typo", "Acme Corp declares dividend", "Pet brand extends certification to cat kibble"];
+    const result = await runSource(deps(store, { sourceContext: { fetch: fakeFetch({ "https://w.com": rss([...kept, ...dropped]) }), userAgent: "t" } }), source);
+    expect(result).toMatchObject({ fetched: kept.length, inserted: kept.length });
+  });
+
   it("holds repeat alerts on a target during the cooldown unless very strong", async () => {
     const { store, source } = await setup();
     const policy = { alertThreshold: 0.6, weakSignalFloor: 0.2, accumulationThreshold: 1.2, accumulationWindowHours: 72, alertCooldownHours: 6, cooldownBypassScore: 0.95 };

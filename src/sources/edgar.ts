@@ -17,6 +17,8 @@ export const edgarAdapter = defineAdapter({
     forms: z.array(z.string()).min(1).default(["8-K"]),
     cik: z.string().optional(),
     count: z.number().int().min(1).max(100).default(40),
+    /** Keep only filings by watched companies. */
+    watchedOnly: z.boolean().default(false),
   }),
   async fetch(config, ctx) {
     const items = [];
