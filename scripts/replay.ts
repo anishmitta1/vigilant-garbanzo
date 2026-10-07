@@ -166,11 +166,28 @@ try {
         market: m ? { summary: summarizeMarket(m), bigDays: m.days.filter((d) => d.big), missing: m.missing } : null,
       };
     });
-    writeFileSync(jsonPath, JSON.stringify({ db: dbPath, currentBar: current, results: summary }, null, 2));
+    const eventGroups = grouping ? await groupedReports(client) : undefined;
+    writeFileSync(jsonPath, JSON.stringify({ db: dbPath, currentBar: current, results: summary, eventGroups }, null, 2));
   }
 } finally {
   client.close();
   rmSync(dir, { recursive: true, force: true });
+}
+
+async function groupedReports(db: typeof client) {
+  const rows = (await db.execute(`
+    SELECT e.id, e.title AS event_title, e.type, e.entities, o.title, o.url, o.fetched_at, es.how, es.similarity
+    FROM events e JOIN event_sources es ON es.event_id = e.id JOIN observations o ON o.id = es.observation_id
+    WHERE e.id IN (SELECT event_id FROM event_sources GROUP BY event_id HAVING COUNT(*) > 1)
+    ORDER BY e.first_seen_at, e.rowid, es.created_at, es.rowid
+  `)).rows;
+  const groups = new Map<string, { title: string; type: string; entities: string[]; reports: { title: string; url: string | null; fetchedAt: string; how: string; similarity: number | null }[] }>();
+  for (const row of rows) {
+    const id = String(row.id);
+    if (!groups.has(id)) groups.set(id, { title: String(row.event_title), type: String(row.type), entities: JSON.parse(String(row.entities)) as string[], reports: [] });
+    groups.get(id)!.reports.push({ title: String(row.title), url: row.url === null ? null : String(row.url), fetchedAt: String(row.fetched_at), how: String(row.how), similarity: row.similarity === null ? null : Number(row.similarity) });
+  }
+  return [...groups.values()].sort((a, b) => b.reports.length - a.reports.length);
 }
 
 /** How items grouped into events and how events moved pillars, from the last run. */
