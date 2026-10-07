@@ -92,7 +92,7 @@ export const PRESET_PILLARS: Record<string, Pick<NewTrade, "entities" | "pillars
       { name: "Nvidia", aliases: ["NVDA"] },
       { name: "Broadcom", aliases: ["AVGO"] },
       { name: "TSMC", aliases: ["TSM", "Taiwan Semiconductor"] },
-      { name: "AMD", aliases: [] },
+      { name: "AMD", aliases: ["Advanced Micro Devices"] },
       { name: "Micron", aliases: ["MU"] },
       { name: "Microsoft", aliases: ["MSFT", "Azure"] },
       { name: "Meta", aliases: ["META", "Facebook"] },
