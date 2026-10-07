@@ -2,7 +2,7 @@ import { loadConfig, type Config } from "./config.js";
 import { openStore, type Store } from "./db.js";
 import { maybeSendDigest } from "./digest.js";
 import { runDueSources, type PipelineDeps } from "./pipeline.js";
-import { createLocalEmbedder, EventIndex } from "./events.js";
+import { createLocalEmbedder, EventIndex, warmEventMemory } from "./events.js";
 import { addPresetPillars, DEFAULT_SOURCES, PRESET_PILLARS, PRESET_THEMES, PRESET_TRADES } from "./presets.js";
 import { heuristicScorer } from "./scoring/heuristic.js";
 import { createLlmScorer } from "./scoring/llm.js";
@@ -51,6 +51,8 @@ async function main(): Promise<void> {
   const app = buildServer(store, deps);
   await app.listen({ port: config.port, host: config.host });
   deps.log?.(`listening on :${config.port} (db ${config.databaseUrl.split("?")[0]}, scorer ${deps.scorer.name})`);
+
+  if (deps.events) await warmEventMemory(store, deps.events, deps.scorer, Date.now(), deps.log);
 
   let running = false;
   const tick = async () => {

@@ -13,5 +13,7 @@ export interface JudgeContext {
 
 export interface Scorer {
   name: string;
+  /** Invalidates offline replay verdicts when the judging prompt changes. */
+  cacheVersion?: string;
   judge(observation: Observation, source: Source, watchlist: Watchlist, context?: JudgeContext): Promise<JudgmentDraft>;
 }

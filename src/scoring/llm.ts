@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Config } from "../config.js";
-import { EFFECTS, type Direction, type EventVerdict, type ImpactDraft, type Observation, type Source, type Watchlist } from "../types.js";
+import type { PillarEvidence } from "../db.js";
+import { EFFECTS, isMajor, type Direction, type EventVerdict, type ImpactDraft, type Observation, type Source, type Watchlist } from "../types.js";
 import { clamp01, errorMessage } from "../util.js";
 import { heuristicScorer } from "./heuristic.js";
 import type { JudgeContext, JudgmentDraft, Scorer } from "./types.js";
@@ -35,13 +37,26 @@ Respond with JSON: {"material": boolean, "event_type": string, "consequence": 0.
 material=true ONLY if a portfolio manager running one of the tracked trades would plausibly change their view, sizing or risk because of this item. Typical material items: an official decision or action (rate decision, executive order, tariff action, export control, final or proposed rule, license or approval that changes an industry), legislation advancing or failing, a binding deal or contract, a guidance or capex change, a surprise data print, enforcement that changes market structure.
 material=false for routine or low-signal items: meetings, conferences, comment-period extensions, minor bank approvals, individual fraud cases, commentary, opinion, explainers, daily price recaps, product or wallet launches, local disputes, listicles, and stories that merely mention a trade's keywords. When in doubt, material=false.
 consequence ~0 for irrelevant or routine items, >0.6 only for material developments.
-impacts: for each trade the item actually moves, the pillar it moves and how. Signals are calibration examples, not an exhaustive list; set "signal" only on a clear match. "majorly" means a PM would act on it now; slight moves are worth recording but not acting on. Weigh each pillar's recent evidence: the same development is not new evidence, but a further independent move the same way can be major when the pillar has already been moving. Use pillar null when the item matters to the trade but fits none of its pillars. Omit trades it doesn't move; [] if none.
-open_events are developments already being tracked. Set same_event to the one this item reports on: the same real-world development, even if worded differently, from another outlet, or naming a company differently (Google/Alphabet). A follow-up with materially new facts (a new decision, a reversal, a different deal) is a new development: same_event null. If the item only re-reports an open event, material=false and impacts [].
+impacts: for each trade the item actually moves, the pillar it moves and how. Signals are calibration examples, not an exhaustive list; set "signal" only on a clear match. "majorly" means a PM would act on it now; slight moves are worth recording but not acting on. For a trade with pillars, a material trade change should have a major impact on a pillar or on the trade (pillar null), rather than calling it material while rating every impact slight.
+Weigh each pillar's recent_evidence and each trade's unmapped_evidence. Counts are distinct developments, not articles; the same event id across pillars is still one development. The listed events include why they mattered, with major moves retained ahead of routine ones. Assess the net evidence, including support AND falsification, and explain what this item adds. Several independent slight moves can make this next move major, but no fixed count or majority automatically makes it material. A re-report cannot turn slight evidence into major evidence. Use pillar null when the item matters to the trade but fits none of its pillars. Omit trades it doesn't move; [] if none.
+open_events are developments already being tracked. Set same_event to the one this item reports on: the same real-world development, even if worded differently, from another outlet, or naming a company differently (Google/Alphabet). Missing names or terms in an earlier thin headline are unknown, not evidence of a different deal. Naming the counterparty, plant location, size or duration of the original agreement is more detail about the same action, not a new development. Require evidence of a separate agreement, new decision, reversal, changed terms or different data release to set same_event null. Do not merge unrelated actions merely because they share companies or a topic. If the item only re-reports an open event, material=false and impacts [].
 event_title: a short neutral title for the development; event_entities: its main companies, agencies or people.
-For trades, say in the rationale what changed and which pillar it moves.`;
+For trades, say in the rationale what changed and which pillar it moves.
+Always return all of these top-level keys, even for irrelevant items and re-reports: material, event_type, consequence, urgency, matched_targets, impacts, same_event, event_title, event_entities, rationale. Use event_type for the type, same_event for an open event id or null, and rationale for the explanation; do not substitute event or event_summary.`;
 
 const EVIDENCE_DAYS = 14;
-const EVIDENCE_PER_PILLAR = 3;
+const EVIDENCE_PER_PILLAR = 8;
+
+function distinctEvidence(rows: PillarEvidence[], atMs: number): PillarEvidence[] {
+  const unique = new Map<string, PillarEvidence>();
+  for (const e of [...rows].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))) {
+    const time = Date.parse(e.createdAt);
+    if (time > atMs || time <= atMs - EVIDENCE_DAYS * 86_400_000) continue;
+    const key = JSON.stringify([e.eventId, e.tradeId, e.pillarId]);
+    if (!unique.has(key)) unique.set(key, e);
+  }
+  return [...unique.values()];
+}
 
 /**
  * System-1 scorer backed by any OpenAI-compatible chat completions API.
@@ -50,13 +65,23 @@ const EVIDENCE_PER_PILLAR = 3;
 export function createLlmScorer(llm: NonNullable<Config["llm"]>, fetchImpl: typeof fetch = fetch): Scorer {
   return {
     name: `llm:${llm.model}`,
+    cacheVersion: createHash("sha256").update(SYSTEM_PROMPT).digest("hex"),
     async judge(observation: Observation, source: Source, watchlist: Watchlist, context: JudgeContext = {}): Promise<JudgmentDraft> {
       const baseline = await heuristicScorer.judge(observation, source, watchlist);
       // Short ids keep the prompt small: pillars P1.., signals P1.2.., events E1..
       const pillarAlias = new Map<string, { tradeId: string; pillarId: string; signals: Set<string> }>();
-      const evidenceSince = Date.parse(observation.fetchedAt || new Date().toISOString()) - EVIDENCE_DAYS * 86_400_000;
-      const evidence = (context.evidence ?? []).filter((e) => Date.parse(e.createdAt) > evidenceSince);
-      const day = (iso: string) => iso.slice(0, 10);
+      const evidence = distinctEvidence(context.evidence ?? [], Date.parse(observation.fetchedAt || new Date().toISOString()));
+      const candidates = (context.candidates ?? []).map((c, i) => ({ alias: `E${i + 1}`, c }));
+      const eventAliases = new Map(candidates.map(({ alias, c }) => [c.id, alias]));
+      for (const e of evidence) if (!eventAliases.has(e.eventId)) eventAliases.set(e.eventId, `H${eventAliases.size + 1}`);
+      const summarize = (rows: PillarEvidence[]) => ({
+        window_days: EVIDENCE_DAYS,
+        counts: Object.fromEntries(EFFECTS.map((effect) => [effect, rows.filter((e) => e.effect === effect).length])),
+        events: [...rows]
+          .sort((a, b) => Number(isMajor(b.effect)) - Number(isMajor(a.effect)) || Date.parse(b.createdAt) - Date.parse(a.createdAt))
+          .slice(0, EVIDENCE_PER_PILLAR)
+          .map((e) => ({ event: eventAliases.get(e.eventId), at: e.createdAt, title: e.eventTitle, effect: e.effect, rationale: e.rationale })),
+      });
       const targets = [
         ...watchlist.themes.map((t) => ({ key: `theme:${t.id}`, name: t.name, description: t.description })),
         ...watchlist.entities.map((e) => ({ key: `entity:${e.id}`, name: e.name, kind: e.kind, aliases: e.aliases })),
@@ -65,6 +90,9 @@ export function createLlmScorer(llm: NonNullable<Config["llm"]>, fetchImpl: type
           name: t.name,
           thesis: t.thesis,
           tickers: t.tickers,
+          ...(evidence.some((e) => e.tradeId === t.id && e.pillarId === null)
+            ? { unmapped_evidence: summarize(evidence.filter((e) => e.tradeId === t.id && e.pillarId === null)) }
+            : {}),
           ...(t.entities.length > 0
             ? { entities: t.entities.map((e) => (e.aliases.length > 0 ? `${e.name} (${e.aliases.join(", ")})` : e.name)) }
             : {}),
@@ -75,22 +103,18 @@ export function createLlmScorer(llm: NonNullable<Config["llm"]>, fetchImpl: type
                   .map((p) => {
                     const id = `P${pillarAlias.size + 1}`;
                     pillarAlias.set(id, { tradeId: t.id, pillarId: p.id, signals: new Set(p.signals.map((s) => `${id}.${s.id}`)) });
-                    const recent = evidence
-                      .filter((e) => e.pillarId === p.id)
-                      .slice(0, EVIDENCE_PER_PILLAR)
-                      .map((e) => `${day(e.createdAt)} ${e.effect}: ${e.eventTitle}`);
+                    const recent = evidence.filter((e) => e.tradeId === t.id && e.pillarId === p.id);
                     return {
                       id,
                       axiom: p.statement,
                       signals: p.signals.map((s) => ({ id: `${id}.${s.id}`, effect: s.effect, example: s.description })),
-                      ...(recent.length > 0 ? { recent_evidence: recent } : {}),
+                      ...(recent.length > 0 ? { recent_evidence: summarize(recent) } : {}),
                     };
                   }),
               }
             : { strengthened_by: t.strengthens, weakened_by: t.weakens }),
         })),
       ];
-      const candidates = (context.candidates ?? []).map((c, i) => ({ alias: `E${i + 1}`, c }));
       try {
         const res = await fetchImpl(`${llm.baseUrl.replace(/\/$/, "")}/chat/completions`, {
           method: "POST",
@@ -113,8 +137,19 @@ export function createLlmScorer(llm: NonNullable<Config["llm"]>, fetchImpl: type
                   open_events: candidates.map(({ alias, c }) => ({
                     id: alias,
                     title: c.title,
+                    type: c.type,
+                    entities: c.entities,
                     first_seen: c.firstSeenAt,
                     reports: c.items,
+                    prior_impacts: (c.impacts ?? []).map((i) => ({
+                      trade: `trade:${i.tradeId}`,
+                      pillar: i.pillarId === null ? null : [...pillarAlias].find(([, p]) => p.pillarId === i.pillarId)?.[0] ?? "retired",
+                      ...(i.pillarId && ![...pillarAlias.values()].some((p) => p.pillarId === i.pillarId)
+                        ? { retired_axiom: watchlist.trades.flatMap((t) => t.pillars).find((p) => p.id === i.pillarId)?.statement }
+                        : {}),
+                      effect: i.effect,
+                      rationale: i.rationale,
+                    })),
                     ...(c.alerted ? { already_alerted: true } : {}),
                   })),
                   item: {

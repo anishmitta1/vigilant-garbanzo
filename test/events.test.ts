@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildDigest, pillarGaps } from "../src/digest.js";
-import { EventIndex, newImpacts, type Embedder } from "../src/events.js";
+import { EventIndex, findCandidates, newImpacts, warmEventMemory, type Embedder } from "../src/events.js";
 import { processItems } from "../src/pipeline.js";
 import type { JudgeContext, JudgmentDraft, Scorer } from "../src/scoring/types.js";
 import type { ImpactDraft, Observation } from "../src/types.js";
@@ -120,6 +120,132 @@ describe("event grouping", () => {
     const n = await store.client.execute("SELECT COUNT(*) AS n FROM events");
     expect(Number(n.rows[0]!.n)).toBe(2);
   });
+
+  it("remembers an earlier push even after more than five other developments and an embedding failure", async () => {
+    const { store, trade, source, firm } = await setup();
+    const scorer = stubScorer(() => [{ tradeId: trade.id, pillarId: firm.id, effect: "majorly_supports", signalId: null, rationale: "deal" }]);
+    const d = { ...deps(store), scorer, events: new EventIndex(wordEmbedder) };
+    await processItems(d, source, [{ externalId: "first", title: "Google signs nuclear deal with Constellation" }]);
+    for (let n = 0; n < 7; n++) {
+      await processItems(d, source, [{ externalId: `other-${n}`, title: `Company ${n} announces a separate power project` }]);
+    }
+    const broken = new EventIndex({ name: "broken", embed: async () => { throw new Error("offline"); } });
+    const result = await processItems({ ...d, events: broken }, source, [{ externalId: "copy", title: "Alphabet partners with Constellation" }]);
+    expect(scorer.contexts.at(-1)?.candidates).toHaveLength(8);
+    expect(result.alerts).toHaveLength(0);
+    expect((await store.digestRows(new Date(0).toISOString())).find((r) => r.title.startsWith("Alphabet"))?.judgment.held).toBe("same_event");
+    const outsideWindow = await findCandidates(store, broken, null, Date.now() + 49 * 3600_000);
+    expect(outsideWindow).toEqual([]);
+  });
+
+  it("does not let a re-report create a major upgrade, a new pillar impact, or an accumulated alert", async () => {
+    const { store, trade, source, firm, build } = await setup();
+    let call = 0;
+    const scorer: Scorer = {
+      name: "test",
+      async judge(o, _s, _w, context) {
+        return {
+          scorer: "test", eventType: "deal", consequence: 0.5, urgency: 0.5,
+          material: ++call > 1, matches: [{ targetKey: `trade:${trade.id}`, name: trade.name, strength: 1, direction: "strengthens" }], rationale: "deal",
+          event: { sameAs: context?.candidates?.[0]?.id ?? null, title: o.title, entities: [] },
+          impacts: [
+            { tradeId: trade.id, pillarId: firm.id, effect: call === 1 ? "slightly_supports" : "majorly_supports", signalId: null, rationale: "deal" },
+            ...(call > 1 ? [{ tradeId: trade.id, pillarId: build.id, effect: "majorly_supports" as const, signalId: null, rationale: "re-rated" }] : []),
+          ],
+        };
+      },
+    };
+    const d = { ...deps(store), scorer, events: new EventIndex(wordEmbedder) };
+    await processItems(d, source, [{ externalId: "first", title: "Google signs Constellation PPA" }]);
+    const copy = await processItems(d, source, [{ externalId: "copy", title: "Google signs Constellation PPA in long-term nuclear deal" }]);
+    expect(copy.alerts).toHaveLength(0);
+    const eventId = (await store.client.execute("SELECT id FROM events")).rows[0]!.id as string;
+    expect(await store.eventImpacts(eventId)).toHaveLength(1);
+    const targets = await store.client.execute("SELECT created_at FROM judgment_targets ORDER BY rowid");
+    expect(targets.rows).toHaveLength(2);
+    expect(targets.rows[1]!.created_at).toBe(new Date(0).toISOString());
+  });
+
+  it("keeps a new decision separate even when it has nearly the same wording as the earlier event", async () => {
+    const { store, trade, source, firm } = await setup();
+    let call = 0;
+    const scorer: Scorer = {
+      name: "test",
+      async judge(o) {
+        const effect = ++call === 1 ? "majorly_supports" as const : "majorly_falsifies" as const;
+        return {
+          scorer: "test", eventType: "deal", consequence: 0.8, urgency: 0.8, material: true,
+          matches: [{ targetKey: `trade:${trade.id}`, name: trade.name, strength: 1 }], rationale: "New decision",
+          event: { sameAs: null, title: o.title, entities: ["Alphabet", "Constellation"] },
+          impacts: [{ tradeId: trade.id, pillarId: firm.id, effect, signalId: null, rationale: "New decision" }],
+        };
+      },
+    };
+    const d = deps(store, { policy: { ...deps(store).policy, alertMode: "events" }, scorer, events: new EventIndex({ name: "identical-vectors", embed: async () => Float32Array.of(1) }) });
+    await processItems(d, source, [{ externalId: "first", title: "Google signs Constellation power deal" }]);
+    const next = await processItems(d, source, [{ externalId: "reversal", title: "Google cancels Constellation power deal" }]);
+    expect(next.alerts).toHaveLength(1);
+    expect((await store.client.execute("SELECT COUNT(*) AS n FROM events")).rows[0]!.n).toBe(2);
+    expect((await store.impactsSince(new Date(0).toISOString())).map((e) => e.effect).sort()).toEqual(["majorly_falsifies", "majorly_supports"]);
+  });
+
+  it("silently warms memory from legacy pushes and does not replay deliveries on restart", async () => {
+    const { store, trade, source, firm } = await setup();
+    const scorer = stubScorer(() => [{ tradeId: trade.id, pillarId: firm.id, effect: "majorly_supports", signalId: null, rationale: "PPA" }]);
+    const d = { ...deps(store), scorer };
+    const first = await processItems(d, source, [{ externalId: "first", title: "Google signs nuclear deal with Constellation" }]);
+    const second = await processItems(d, source, [{ externalId: "second", title: "Alphabet partners with Constellation" }]);
+    expect(first.alerts.concat(second.alerts)).toHaveLength(2);
+    const before = (await store.client.execute("SELECT * FROM alerts ORDER BY rowid")).rows;
+    const index = new EventIndex(wordEmbedder);
+    await warmEventMemory(store, index, scorer, Date.now());
+    const after = (await store.client.execute("SELECT * FROM alerts ORDER BY rowid")).rows;
+    expect(after.map((r) => r.event_id)).toEqual([after[0]!.event_id, after[0]!.event_id]);
+    expect(after[0]!.event_id).toBeTruthy();
+    for (let n = 0; n < before.length; n++) expect({ ...after[n], event_id: null }).toEqual(before[n]);
+    const calls = scorer.contexts.length;
+    await warmEventMemory(store, new EventIndex(wordEmbedder), scorer, Date.now());
+    expect(scorer.contexts).toHaveLength(calls);
+    const third = await processItems({ ...d, events: new EventIndex(wordEmbedder) }, source, [{ externalId: "third", title: "Uranium miners rally on Constellation's Google deal" }]);
+    expect(third.alerts).toHaveLength(0);
+    expect((await store.client.execute("SELECT COUNT(*) AS n FROM impacts")).rows[0]!.n).toBe(1);
+  });
+});
+
+describe("weak candidate retrieval", () => {
+  it("offers unalerted events even below the old similarity cutoff, bounded to three", async () => {
+    const { store } = await setup();
+    const index = new EventIndex(wordEmbedder);
+    const now = Date.now();
+    await index.load(store, now);
+    const ids: string[] = [];
+    for (const score of [0.1, 0.2, 0.3, 0.4]) {
+      const event = await store.createEvent({ title: `Event ${score}`, type: "deal", entities: [], firstSeenAt: new Date(now).toISOString() });
+      ids.push(event.id);
+      index.add(event.id, Float32Array.from([score, Math.sqrt(1 - score * score)]), now);
+    }
+    const candidates = await findCandidates(store, index, Float32Array.from([1, 0]), now);
+    expect(candidates.map((candidate) => candidate.id)).toEqual(ids.slice(1).reverse());
+    expect(candidates.every((candidate) => !candidate.alerted && candidate.similarity < 0.6)).toBe(true);
+  });
+});
+
+describe("warm-up fallback", () => {
+  it("logs incomplete model evidence while linking old alerts without redelivery", async () => {
+    const { store, trade, source } = await setup();
+    const scorer = stubScorer(() => [{ tradeId: trade.id, pillarId: null, effect: "majorly_supports", signalId: null, rationale: "PPA" }]);
+    await processItems({ ...deps(store), scorer }, source, [{ externalId: "old", title: "Google signs power deal" }]);
+    const fallback: Scorer = {
+      name: "llm:unavailable",
+      judge: async () => ({ scorer: "heuristic", eventType: "deal", consequence: 0, urgency: 0, matches: [], rationale: "model unavailable" }),
+    };
+    const log: string[] = [];
+    await warmEventMemory(store, new EventIndex(wordEmbedder), fallback, Date.now(), (message) => log.push(message));
+    expect(log.some((message) => message.includes("impact history may be incomplete"))).toBe(true);
+    expect(log).not.toContain("event memory ready");
+    expect(await store.listAlerts()).toHaveLength(1);
+    expect(await store.alertedEventIdsSince(new Date(0).toISOString())).toHaveLength(1);
+  });
 });
 
 describe("newImpacts", () => {
@@ -138,6 +264,21 @@ describe("newImpacts", () => {
 });
 
 describe("pillars", () => {
+  it("shows only the latest reading of an event per pillar, with rationale and shared event identity", async () => {
+    const { store, source, trade, firm, build } = await setup();
+    const observation = await store.insertObservation({ sourceId: source.id, externalId: "a", title: "PPA", url: null, urlHash: null, titleHash: "ppa", summary: "", publishedAt: null, raw: null });
+    const event = await store.createEvent({ title: "Binding PPA", type: "deal", entities: ["Alphabet"], firstSeenAt: "2026-10-05T00:00:00Z" });
+    const base = { eventId: event.id, observationId: observation!.id, tradeId: trade.id, signalId: null };
+    await store.insertImpact({ ...base, pillarId: firm.id, effect: "slightly_supports", rationale: "Preliminary", createdAt: "2026-10-05T00:00:00Z" });
+    await store.insertImpact({ ...base, pillarId: firm.id, effect: "majorly_supports", rationale: "Now binding", createdAt: "2026-10-06T00:00:00Z" });
+    await store.insertImpact({ ...base, pillarId: build.id, effect: "slightly_supports", rationale: "Capacity needs building", createdAt: "2026-10-06T00:00:00Z" });
+    await store.insertImpact({ ...base, pillarId: null, effect: "slightly_falsifies", rationale: "Balance sheet concern", createdAt: "2026-10-06T00:00:00Z" });
+    const evidence = await store.impactsSince("2026-10-01T00:00:00Z");
+    expect(evidence).toHaveLength(3);
+    expect(evidence.find((e) => e.pillarId === firm.id)).toMatchObject({ eventId: event.id, effect: "majorly_supports", rationale: "Now binding" });
+    expect(evidence.every((e) => e.eventId === event.id)).toBe(true);
+    expect((await store.eventSummaries([event.id]))[0]!.impacts).toHaveLength(4);
+  });
   it("stores pillars with short signal ids, and retires without deleting", async () => {
     const { store, firm } = await setup();
     expect(firm.signals[0]).toMatchObject({ id: "1", effect: "majorly_supports" });

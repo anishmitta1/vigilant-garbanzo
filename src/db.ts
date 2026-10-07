@@ -300,14 +300,17 @@ export type NewEvent = Omit<MimirEvent, "id" | "lastSeenAt">;
 export interface EventSummary extends MimirEvent {
   /** A few of its headlines, earliest first. */
   items: string[];
+  impacts?: Impact[];
 }
 
 /** A pillar's recent evidence, so the model can judge cumulative weight. */
 export interface PillarEvidence {
+  eventId: string;
   tradeId: string;
   pillarId: string | null;
   effect: Effect;
   eventTitle: string;
+  rationale: string;
   createdAt: string;
 }
 export type NewEntity = Pick<Entity, "name" | "kind" | "aliases">;
@@ -699,9 +702,10 @@ export class Store {
        WHERE es.event_id IN (${marks}) ORDER BY es.created_at, es.rowid`,
       ids,
     );
+    const impacts = (await this.all(`SELECT * FROM impacts WHERE event_id IN (${marks}) ORDER BY created_at`, ids)).map(toImpact);
     return ids.flatMap((id) => {
       const e = events.find((x) => x.id === id);
-      return e ? [{ ...e, items: titles.filter((t) => s(t.event_id) === id).slice(0, 3).map((t) => s(t.title)) }] : [];
+      return e ? [{ ...e, items: titles.filter((t) => s(t.event_id) === id).slice(0, 3).map((t) => s(t.title)), impacts: impacts.filter((i) => i.eventId === id) }] : [];
     });
   }
 
@@ -719,6 +723,18 @@ export class Store {
     return rows.map((r) => s(r.event_id));
   }
 
+  async unlinkedAlertObservations(since: string): Promise<Observation[]> {
+    return (await this.all(
+      `SELECT o.* FROM observations o JOIN alerts a ON a.observation_id = o.id
+       WHERE a.event_id IS NULL AND a.created_at > ? GROUP BY o.id ORDER BY MIN(a.created_at), o.rowid`,
+      [since],
+    )).map(toObservation);
+  }
+
+  async linkAlertsToEvent(observationId: string, eventId: string): Promise<void> {
+    await this.run("UPDATE alerts SET event_id = ? WHERE observation_id = ? AND event_id IS NULL", [eventId, observationId]);
+  }
+
   async eventImpacts(eventId: string): Promise<Impact[]> {
     return (await this.all("SELECT * FROM impacts WHERE event_id = ? ORDER BY created_at", [eventId])).map(toImpact);
   }
@@ -733,18 +749,24 @@ export class Store {
     return impact;
   }
 
-  /** Impacts since `since`, newest first, with their event's title. */
+  /** One reading per event and pillar, newest first; an upgrade isn't a second piece of evidence. */
   async impactsSince(since: string): Promise<PillarEvidence[]> {
     const rows = await this.all(
-      `SELECT i.trade_id, i.pillar_id, i.effect, i.created_at, e.title FROM impacts i JOIN events e ON e.id = i.event_id
-       WHERE i.created_at > ? ORDER BY i.created_at DESC`,
+      `WITH readings AS (
+         SELECT i.*, ROW_NUMBER() OVER (PARTITION BY event_id, trade_id, pillar_id ORDER BY created_at DESC, rowid DESC) AS latest
+         FROM impacts i WHERE i.created_at > ?
+       )
+       SELECT i.*, e.title FROM readings i JOIN events e ON e.id = i.event_id
+       WHERE i.latest = 1 ORDER BY i.created_at DESC`,
       [since],
     );
     return rows.map((r) => ({
+      eventId: s(r.event_id),
       tradeId: s(r.trade_id),
       pillarId: sOrNull(r.pillar_id),
       effect: s(r.effect) as Effect,
       eventTitle: s(r.title),
+      rationale: s(r.rationale),
       createdAt: s(r.created_at),
     }));
   }

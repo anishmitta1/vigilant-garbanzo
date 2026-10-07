@@ -1,14 +1,15 @@
 // Replays stored history through the real pipeline, with each item judged as of when it was fetched.
 // Delivery is impossible: no channel is configured and any network call throws.
 import type { Client, Row } from "@libsql/client";
+import { createHash } from "node:crypto";
 import type { DigestRow, Store } from "./db.js";
 import { isNearMiss, latencyMinutes, pushesSince } from "./digest.js";
 import type { Push } from "./market.js";
-import type { EventIndex } from "./events.js";
+import type { EventCandidate, EventIndex } from "./events.js";
 import { processItems, type PipelineDeps } from "./pipeline.js";
 import { heuristicScorer } from "./scoring/heuristic.js";
-import type { JudgmentDraft, Scorer } from "./scoring/types.js";
-import type { HeldReason, Observation, TargetMatch } from "./types.js";
+import type { JudgeContext, JudgmentDraft, Scorer } from "./scoring/types.js";
+import type { HeldReason, Observation, TargetMatch, Watchlist } from "./types.js";
 
 export interface HistoryRow {
   sourceId: string;
@@ -90,7 +91,40 @@ export async function loadHistory(client: Client): Promise<HistoryRow[]> {
   }));
 }
 
-export type CachedVerdict = JudgmentDraft & { sameAsTitle?: string };
+export type CachedVerdict = JudgmentDraft & { sameAsTitle?: string; sameAsEvent?: string; pillarRefs?: Record<string, string> };
+
+const eventKey = (e: EventCandidate): string => JSON.stringify([e.title, e.type, e.entities, e.firstSeenAt]);
+const pillarRefs = (w: Watchlist): Map<string, string> => new Map(w.trades.flatMap((t) => t.pillars.map((p, n) => [p.id, `${t.id}/${n}`] as const)));
+
+/** Grouped judgments depend on the memory shown to the scorer, not just a headline. Exclude scratch ids. */
+function groupedCacheKey(o: Observation, source: { id: string; type: string; name: string; weight: number }, w: Watchlist, c: JudgeContext, model: Scorer): string {
+  const pillars = pillarRefs(w);
+  const events = new Map<string, number>();
+  const eventRef = (id: string) => {
+    if (!events.has(id)) events.set(id, events.size);
+    return events.get(id);
+  };
+  const input = {
+    model: model.name, version: model.cacheVersion,
+    observation: [o.sourceId, o.externalId, o.title, o.summary, o.publishedAt, o.fetchedAt],
+    source: [source.id, source.type, source.name, source.weight],
+    watchlist: {
+      themes: w.themes.map(({ id, name, description, keywords }) => ({ id, name, description, keywords })),
+      entities: w.entities.map(({ id, name, kind, aliases }) => ({ id, name, kind, aliases })),
+      trades: w.trades.map((t) => ({
+        id: t.id, name: t.name, thesis: t.thesis, keywords: t.keywords, tickers: t.tickers, entities: t.entities,
+        strengthens: t.strengthens, weakens: t.weakens,
+        pillars: t.pillars.map((p) => ({ id: pillars.get(p.id), statement: p.statement, active: p.active, signals: p.signals })),
+      })),
+    },
+    candidates: c.candidates?.map((e) => ({
+      event: eventRef(e.id), key: eventKey(e), reports: e.items, alerted: e.alerted,
+      impacts: e.impacts?.map((i) => ({ tradeId: i.tradeId, pillar: i.pillarId === null ? null : pillars.get(i.pillarId), effect: i.effect, rationale: i.rationale })),
+    })),
+    evidence: c.evidence?.map(({ eventId, pillarId, ...e }) => ({ ...e, event: eventRef(eventId), pillar: pillarId === null ? null : pillars.get(pillarId) })),
+  };
+  return `events-v2:${createHash("sha256").update(JSON.stringify(input)).digest("hex")}`;
+}
 
 /** Items worth re-asking the model about when testing a prompt: it called them material or near the bar. */
 export const isCandidate = (v: JudgmentDraft | null): boolean => v !== null && (v.material === true || v.consequence >= 0.3);
@@ -114,17 +148,26 @@ export function historyScorer(
       const { model } = opts;
       if (model && (opts.all || isCandidate(verdict))) {
         const candidates = context?.candidates ?? [];
-        const cached = cache.get(observation.title);
-        // Event ids differ between runs, so a cached same-event call is stored by the event's title.
+        const cacheKey = context ? groupedCacheKey(observation, source, watchlist, context, model) : observation.title;
+        const cached = cache.get(cacheKey);
+        // Scratch event and preset pillar ids differ between CLI runs; remap their stable references.
         if (cached) {
-          const { sameAsTitle, ...draft } = cached;
-          if (!draft.event) return draft;
-          return { ...draft, event: { ...draft.event, sameAs: candidates.find((c) => c.title === sameAsTitle)?.id ?? null } };
+          const { sameAsTitle, sameAsEvent, pillarRefs: refs, ...draft } = cached;
+          const current = new Map([...pillarRefs(watchlist)].map(([id, ref]) => [ref, id]));
+          return {
+            ...draft,
+            ...(draft.event ? { event: { ...draft.event, sameAs: candidates.find((c) => sameAsEvent ? eventKey(c) === sameAsEvent : c.title === sameAsTitle)?.id ?? null } } : {}),
+            ...(draft.impacts ? { impacts: draft.impacts.map((i) => ({ ...i, pillarId: i.pillarId === null ? null : current.get(refs?.[i.pillarId] ?? "") ?? i.pillarId })) } : {}),
+          };
         }
         calls++;
         const fresh = await model.judge(observation, source, watchlist, context);
         const sameAsTitle = candidates.find((c) => c.id === fresh.event?.sameAs)?.title;
-        if (isModelVerdict(fresh)) cache.set(observation.title, { ...fresh, ...(sameAsTitle ? { sameAsTitle } : {}) });
+        const sameAs = candidates.find((c) => c.id === fresh.event?.sameAs);
+        if (isModelVerdict(fresh)) cache.set(cacheKey, {
+          ...fresh,
+          ...(context ? { pillarRefs: Object.fromEntries(pillarRefs(watchlist)), ...(sameAs ? { sameAsEvent: eventKey(sameAs) } : {}) } : sameAsTitle ? { sameAsTitle } : {}),
+        });
         return fresh;
       }
       return verdict ?? heuristicScorer.judge(observation, source, watchlist);

@@ -3,7 +3,9 @@
 // similar open events for free; the model, in the call it already makes per item, decides the ambiguous cases.
 import { splitOutlet } from "./alerts.js";
 import type { EventSummary, Store } from "./db.js";
+import type { Scorer } from "./scoring/types.js";
 import { isMajor, type Impact, type ImpactDraft, type JudgmentDraftLike, type Observation, type Source } from "./types.js";
+import { errorMessage } from "./util.js";
 
 export interface Embedder {
   name: string;
@@ -14,14 +16,11 @@ export interface Embedder {
 export const GROUPING = {
   /** Events still open for new reports. */
   windowHours: 72,
-  /** Similar events at or above this are offered to the model as candidates. */
-  similarMin: 0.6,
   /** Without a model verdict (backlog, first polls, model errors), merge only near-identical reports. */
   autoMergeMin: 0.9,
   maxSimilar: 3,
   /** Recently alerted events are always offered, since rewrites can share few words ("Alphabet" vs "Google"). */
   alertedWindowHours: 48,
-  maxAlerted: 5,
 };
 
 /** Local sentence-embedding model (~25 MB, downloaded on first use, ~3 ms per headline on one CPU). */
@@ -95,18 +94,14 @@ export interface EventCandidate extends EventSummary {
 }
 
 /** Open events this item might report on: the most similar ones plus anything alerted on recently. */
-export async function findCandidates(store: Store, index: EventIndex, vector: Float32Array, nowMs: number): Promise<EventCandidate[]> {
-  await index.load(store, nowMs);
-  const sims = index.search(vector, nowMs);
+export async function findCandidates(store: Store, index: EventIndex, vector: Float32Array | null, nowMs: number): Promise<EventCandidate[]> {
+  if (vector) await index.load(store, nowMs);
+  const sims = vector ? index.search(vector, nowMs) : new Map<string, number>();
   const similar = [...sims]
-    .filter(([, sim]) => sim >= GROUPING.similarMin)
     .sort((a, b) => b[1] - a[1])
     .slice(0, GROUPING.maxSimilar)
     .map(([id]) => id);
-  const alerted = (await store.alertedEventIdsSince(new Date(nowMs - GROUPING.alertedWindowHours * 3600_000).toISOString())).slice(
-    0,
-    GROUPING.maxAlerted,
-  );
+  const alerted = await store.alertedEventIdsSince(new Date(nowMs - GROUPING.alertedWindowHours * 3600_000).toISOString());
   const ids = [...new Set([...similar, ...alerted])];
   return (await store.eventSummaries(ids)).map((e) => ({ ...e, similarity: sims.get(e.id) ?? 0, alerted: alerted.includes(e.id) }));
 }
@@ -155,8 +150,44 @@ export async function placeInEvent(
   if (vector) index.add(eventId, vector, nowMs);
   const existing = joined ? await store.eventImpacts(eventId) : [];
   const added: Impact[] = [];
-  for (const d of newImpacts(existing, judgment.impacts ?? [])) {
+  // sameAs identifies a re-report, not an independent development. It cannot add evidence by re-rating it.
+  for (const d of newImpacts(existing, joined ? [] : (judgment.impacts ?? []))) {
     added.push(await store.insertImpact({ ...d, eventId, observationId: item.observationId, createdAt: at }));
   }
   return { eventId, joined, added };
+}
+
+/** Silently seed event memory from pre-event-layer pushes. Existing delivery records are never changed. */
+export async function warmEventMemory(store: Store, index: EventIndex, scorer: Scorer, nowMs: number, log?: (msg: string) => void): Promise<void> {
+  const since = new Date(nowMs - GROUPING.alertedWindowHours * 3600_000).toISOString();
+  const observations = await store.unlinkedAlertObservations(since);
+  if (observations.length === 0) return;
+  log?.(`warming event memory from ${observations.length} prior pushed items (no delivery)`);
+  const watchlist = { trades: await store.listTrades(), themes: await store.listThemes(), entities: await store.listEntities() };
+  let fallbacks = 0;
+  for (const o of observations) {
+    const existing = await store.eventIdForObservation(o.id);
+    if (existing) {
+      await store.linkAlertsToEvent(o.id, existing);
+      continue;
+    }
+    const source = await store.getSource(o.sourceId);
+    if (!source) continue;
+    let vector: Float32Array | null = null;
+    try {
+      vector = await index.embedder.embed(embedText(o, source));
+    } catch (err) {
+      log?.(`event embedding failed: ${errorMessage(err)}`);
+    }
+    const candidates = await findCandidates(store, index, vector, nowMs);
+    const evidence = await store.impactsSince(new Date(nowMs - 14 * 86_400_000).toISOString());
+    const judgment = await scorer.judge(o, source, watchlist, { candidates, evidence });
+    if (scorer.name.startsWith("llm:") && !judgment.scorer.startsWith("llm:")) {
+      fallbacks++;
+      log?.(`event memory model verdict unavailable for ${o.id}; using local fallback`);
+    }
+    const placed = await placeInEvent(store, index, { observationId: o.id, title: o.title, judgment, vector, candidates }, o.fetchedAt, Date.parse(o.fetchedAt));
+    await store.linkAlertsToEvent(o.id, placed.eventId);
+  }
+  log?.(fallbacks > 0 ? `event memory linked with ${fallbacks} local fallbacks; impact history may be incomplete` : "event memory ready");
 }

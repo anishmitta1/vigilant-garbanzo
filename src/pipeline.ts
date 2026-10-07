@@ -104,16 +104,17 @@ export async function processItems(
     if (events) {
       try {
         vector = await events.embedder.embed(embedText(observation, source));
-        candidates = await findCandidates(store, events, vector, nowMs);
       } catch (err) {
-        deps.log?.(`event lookup failed: ${errorMessage(err)}`);
+        deps.log?.(`event embedding failed: ${errorMessage(err)}`);
       }
+      // The pushed-event memory works even if the local model cannot load.
+      candidates = await findCandidates(store, events, vector, nowMs);
     }
     const place = async (j: Parameters<typeof placeInEvent>[2]["judgment"]): Promise<Placement | null> => {
       if (!events) return null;
       const placed = await placeInEvent(store, events, { observationId: observation.id, title: observation.title, judgment: j, vector, candidates }, at, nowMs);
       const title = (candidates.find((c) => c.id === placed.eventId)?.title ?? j.event?.title) || observation.title;
-      evidence.unshift(...placed.added.map((i) => ({ tradeId: i.tradeId, pillarId: i.pillarId, effect: i.effect, eventTitle: title, createdAt: at })));
+      evidence.unshift(...placed.added.map((i) => ({ eventId: i.eventId, tradeId: i.tradeId, pillarId: i.pillarId, effect: i.effect, eventTitle: title, rationale: i.rationale, createdAt: at })));
       return placed;
     };
 
@@ -129,21 +130,23 @@ export async function processItems(
       await place(judgment);
       continue;
     }
+    const placed = await place(judgment);
+    if (placed?.joined) {
+      judgment.material = false;
+      judgment.impacts = [];
+      judgment.held = "same_event";
+      await store.insertJudgment(judgment, BASELINE_SIGNAL_AT);
+      continue;
+    }
     const priorWeakSums = new Map<string, number>();
     for (const m of judgment.matches) {
       priorWeakSums.set(m.targetKey, await store.weakSignalSum(m.targetKey, since, policy.weakSignalFloor, policy.alertThreshold));
     }
     await store.insertJudgment(judgment);
-    const placed = await place(judgment);
 
     const decision =
       policy.alertMode === "events" ? decideEventAlert(judgment, placed?.added ?? []) : decideAlert(judgment, priorWeakSums, policy);
     if (!decision) continue;
-    // Another report of a development already alerted on, adding no new major move.
-    if (placed?.joined?.alerted && !placed.added.some((i) => isMajor(i.effect))) {
-      await store.markHeld(judgment.id, "same_event");
-      continue;
-    }
     if (await coolingDown(store, decision, policy, nowMs)) {
       await store.markHeld(judgment.id, "cooldown");
       continue;
