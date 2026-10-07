@@ -1,6 +1,7 @@
 import {
   buildPayload,
   decideAlert,
+  decideEventAlert,
   deliverBark,
   deliverNtfy,
   deliverSlack,
@@ -9,13 +10,14 @@ import {
   type AlertPolicy,
 } from "./alerts.js";
 import type { NtfyConfig } from "./config.js";
-import type { Store } from "./db.js";
+import type { PillarEvidence, Store } from "./db.js";
+import { embedText, findCandidates, placeInEvent, type EventCandidate, type EventIndex, type Placement } from "./events.js";
 import { normalize, sameStory } from "./preprocess.js";
 import { heuristicScorer } from "./scoring/heuristic.js";
 import type { Scorer } from "./scoring/types.js";
 import { getAdapter } from "./sources/registry.js";
 import type { SourceContext } from "./sources/types.js";
-import type { Alert, HeldReason, RawItem, Source } from "./types.js";
+import { isMajor, type Alert, type HeldReason, type RawItem, type Source } from "./types.js";
 import { errorMessage, newId } from "./util.js";
 
 export interface PipelineDeps {
@@ -30,7 +32,11 @@ export interface PipelineDeps {
     cooldownBypassScore?: number;
     /** Skip alerts for a story already alerted on (any outlet) within this window. */
     storyWindowHours?: number;
+    /** "events": alert on new major pillar impacts instead of material verdicts. */
+    alertMode?: "legacy" | "events";
   };
+  /** Event grouping; without it, items are judged one by one as before. */
+  events?: EventIndex;
   sourceContext: SourceContext;
   webhookUrl?: string;
   ntfy?: NtfyConfig;
@@ -47,6 +53,7 @@ export interface PipelineDeps {
 }
 
 const TITLE_DEDUPE_WINDOW_MS = 7 * 24 * 3600_000;
+const EVIDENCE_WINDOW_MS = 14 * 24 * 3600_000;
 /** Signal timestamp for baseline items: before any accumulation window, so they never accumulate. */
 const BASELINE_SIGNAL_AT = new Date(0).toISOString();
 
@@ -78,6 +85,9 @@ export async function processItems(
   const since = new Date(nowMs - policy.accumulationWindowHours * 3600_000).toISOString();
   const titleSince =
     getAdapter(source.type).dedupeByTitle === false ? null : new Date(nowMs - TITLE_DEDUPE_WINDOW_MS).toISOString();
+  const { events } = deps;
+  const evidence: PillarEvidence[] = events ? await store.impactsSince(new Date(nowMs - EVIDENCE_WINDOW_MS).toISOString()) : [];
+  const pillarNames = new Map(watchlist.trades.flatMap((t) => t.pillars.map((p) => [p.id, p.statement] as const)));
 
   for (const item of items) {
     const draft = normalize(source.id, item);
@@ -89,13 +99,43 @@ export async function processItems(
     const observation = await store.insertObservation(draft, at);
     result.inserted++;
 
+    let vector: Float32Array | null = null;
+    let candidates: EventCandidate[] = [];
+    if (events) {
+      try {
+        vector = await events.embedder.embed(embedText(observation, source));
+      } catch (err) {
+        deps.log?.(`event embedding failed: ${errorMessage(err)}`);
+      }
+      // The pushed-event memory works even if the local model cannot load.
+      candidates = await findCandidates(store, events, vector, nowMs);
+    }
+    const place = async (j: Parameters<typeof placeInEvent>[2]["judgment"]): Promise<Placement | null> => {
+      if (!events) return null;
+      const placed = await placeInEvent(store, events, { observationId: observation.id, title: observation.title, judgment: j, vector, candidates }, at, nowMs);
+      const title = (candidates.find((c) => c.id === placed.eventId)?.title ?? j.event?.title) || observation.title;
+      evidence.unshift(...placed.added.map((i) => ({ eventId: i.eventId, tradeId: i.tradeId, pillarId: i.pillarId, effect: i.effect, eventTitle: title, rationale: i.rationale, createdAt: at })));
+      return placed;
+    };
+
     // Backlog (e.g. a feed's history on first poll) and a new source's first batch are stored and scored
     // but never alert or accumulate, so they get the free heuristic rather than a model call.
     const held: HeldReason | undefined = isStale(observation.publishedAt, policy.maxAlertAgeHours, nowMs) ? "stale" : opts.baseline ? "baseline" : undefined;
-    const scored = await (held ? heuristicScorer : scorer).judge(observation, source, watchlist);
+    const scored = held
+      ? await heuristicScorer.judge(observation, source, watchlist)
+      : await scorer.judge(observation, source, watchlist, events ? { candidates, evidence } : undefined);
     const judgment = { ...scored, ...(held ? { held } : {}), id: newId(), observationId: observation.id, createdAt: at };
     if (held) {
       await store.insertJudgment(judgment, held === "stale" ? new Date(observation.publishedAt!).toISOString() : BASELINE_SIGNAL_AT);
+      await place(judgment);
+      continue;
+    }
+    const placed = await place(judgment);
+    if (placed?.joined) {
+      judgment.material = false;
+      judgment.impacts = [];
+      judgment.held = "same_event";
+      await store.insertJudgment(judgment, BASELINE_SIGNAL_AT);
       continue;
     }
     const priorWeakSums = new Map<string, number>();
@@ -104,7 +144,8 @@ export async function processItems(
     }
     await store.insertJudgment(judgment);
 
-    const decision = decideAlert(judgment, priorWeakSums, policy);
+    const decision =
+      policy.alertMode === "events" ? decideEventAlert(judgment, placed?.added ?? []) : decideAlert(judgment, priorWeakSums, policy);
     if (!decision) continue;
     if (await coolingDown(store, decision, policy, nowMs)) {
       await store.markHeld(judgment.id, "cooldown");
@@ -120,18 +161,21 @@ export async function processItems(
       reason: decision.reason,
       score: decision.score,
       targetKey: decision.targetKey,
+      eventId: placed?.eventId ?? null,
       delivered: false,
       deliveryError: null,
     }, at);
     deps.log?.(`ALERT [${decision.reason} ${decision.score}] ${observation.title}`);
-    const payload = buildPayload(alert, observation, judgment, source);
+    const moved = (placed?.added ?? []).filter((i) => isMajor(i.effect) && i.pillarId).map((i) => pillarNames.get(i.pillarId!)!);
+    const payload = buildPayload(alert, observation, judgment, source, moved.filter(Boolean));
     const channels: (() => Promise<void>)[] = [];
     const { webhookUrl, ntfy, barkUrl, slackWebhookUrl } = deps;
     if (webhookUrl) channels.push(() => deliverWebhook(webhookUrl, payload, deps.fetch));
     if (ntfy) channels.push(() => deliverNtfy(ntfy, payload, deps.fetch));
     const barkWorthy =
       alert.reason === "direct" &&
-      (deps.barkRequiresMaterial ? judgment.material === true : alert.score >= (deps.barkMinScore ?? 0));
+      (policy.alertMode === "events" ||
+        (deps.barkRequiresMaterial ? judgment.material === true : alert.score >= (deps.barkMinScore ?? 0)));
     if (barkUrl && barkWorthy) {
       channels.push(() => deliverBark(barkUrl, payload, deps.fetch));
     }

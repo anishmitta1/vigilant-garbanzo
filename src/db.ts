@@ -3,14 +3,20 @@ import { accumulatingMatches } from "./alerts.js";
 import type {
   Alert,
   AlertReason,
+  Effect,
   Entity,
   EntityKind,
   HeldReason,
+  Impact,
   Judgment,
+  MimirEvent,
   Observation,
+  Pillar,
+  Signal,
   Source,
   Theme,
   Trade,
+  TradeEntity,
 } from "./types.js";
 import { newId, nowIso } from "./util.js";
 
@@ -100,6 +106,46 @@ const MIGRATIONS = [
     created_at TEXT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS pillars (
+    id TEXT PRIMARY KEY,
+    trade_id TEXT NOT NULL REFERENCES trades(id) ON DELETE CASCADE,
+    statement TEXT NOT NULL,
+    signals TEXT NOT NULL DEFAULT '[]',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS events (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    type TEXT NOT NULL,
+    entities TEXT NOT NULL DEFAULT '[]',
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS events_last_seen ON events(last_seen_at)`,
+  `CREATE TABLE IF NOT EXISTS event_sources (
+    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    observation_id TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+    how TEXT NOT NULL,
+    similarity REAL,
+    embedding BLOB,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS event_sources_event ON event_sources(event_id)`,
+  `CREATE INDEX IF NOT EXISTS event_sources_created ON event_sources(created_at)`,
+  `CREATE TABLE IF NOT EXISTS impacts (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    observation_id TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+    trade_id TEXT NOT NULL,
+    pillar_id TEXT,
+    effect TEXT NOT NULL,
+    signal_id TEXT,
+    rationale TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS impacts_event ON impacts(event_id)`,
+  `CREATE INDEX IF NOT EXISTS impacts_created ON impacts(created_at)`,
 ];
 
 const json = (v: unknown): string => JSON.stringify(v);
@@ -125,9 +171,47 @@ function toTrade(r: Row): Trade {
     thesis: s(r.thesis),
     keywords: parse<string[]>(r.keywords, []),
     tickers: parse<string[]>(r.tickers, []),
+    entities: parse<TradeEntity[]>(r.entities, []),
+    pillars: [],
     strengthens: parse<string[]>(r.strengthens, []),
     weakens: parse<string[]>(r.weakens, []),
     preset: Number(r.preset) === 1,
+    createdAt: s(r.created_at),
+  };
+}
+
+function toPillar(r: Row): Pillar {
+  return {
+    id: s(r.id),
+    tradeId: s(r.trade_id),
+    statement: s(r.statement),
+    signals: parse<Signal[]>(r.signals, []),
+    active: Number(r.active) === 1,
+    createdAt: s(r.created_at),
+  };
+}
+
+function toEvent(r: Row): MimirEvent {
+  return {
+    id: s(r.id),
+    title: s(r.title),
+    type: s(r.type),
+    entities: parse<string[]>(r.entities, []),
+    firstSeenAt: s(r.first_seen_at),
+    lastSeenAt: s(r.last_seen_at),
+  };
+}
+
+function toImpact(r: Row): Impact {
+  return {
+    id: s(r.id),
+    eventId: s(r.event_id),
+    observationId: s(r.observation_id),
+    tradeId: s(r.trade_id),
+    pillarId: sOrNull(r.pillar_id),
+    effect: s(r.effect) as Effect,
+    signalId: sOrNull(r.signal_id),
+    rationale: s(r.rationale),
     createdAt: s(r.created_at),
   };
 }
@@ -193,6 +277,7 @@ function toAlert(r: Row): Alert {
     id: s(r.id),
     observationId: s(r.observation_id),
     judgmentId: s(r.judgment_id),
+    eventId: sOrNull(r.event_id),
     reason: s(r.reason) as AlertReason,
     score: Number(r.score),
     targetKey: sOrNull(r.target_key),
@@ -203,9 +288,31 @@ function toAlert(r: Row): Alert {
 }
 
 export type NewTheme = Pick<Theme, "name" | "description" | "keywords"> & { preset?: boolean };
+export type NewPillar = Pick<Pillar, "statement"> & { signals: Omit<Signal, "id">[] };
 export type NewTrade = Pick<Trade, "name" | "thesis" | "keywords" | "tickers" | "strengthens" | "weakens"> & {
+  entities?: TradeEntity[];
+  pillars?: NewPillar[];
   preset?: boolean;
 };
+export type NewEvent = Omit<MimirEvent, "id" | "lastSeenAt">;
+
+/** An open event as offered to the model when it decides whether an item is new. */
+export interface EventSummary extends MimirEvent {
+  /** A few of its headlines, earliest first. */
+  items: string[];
+  impacts?: Impact[];
+}
+
+/** A pillar's recent evidence, so the model can judge cumulative weight. */
+export interface PillarEvidence {
+  eventId: string;
+  tradeId: string;
+  pillarId: string | null;
+  effect: Effect;
+  eventTitle: string;
+  rationale: string;
+  createdAt: string;
+}
 export type NewEntity = Pick<Entity, "name" | "kind" | "aliases">;
 export type NewSource = Pick<Source, "type" | "name" | "config"> &
   Partial<Pick<Source, "enabled" | "weight" | "pollIntervalSeconds">>;
@@ -233,6 +340,12 @@ export class Store {
     }
     if (!judgmentCols.some((c) => c.name === "held")) {
       await this.client.execute("ALTER TABLE judgments ADD COLUMN held TEXT");
+    }
+    if (!(await this.all("PRAGMA table_info(trades)")).some((c) => c.name === "entities")) {
+      await this.client.execute("ALTER TABLE trades ADD COLUMN entities TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!(await this.all("PRAGMA table_info(alerts)")).some((c) => c.name === "event_id")) {
+      await this.client.execute("ALTER TABLE alerts ADD COLUMN event_id TEXT");
     }
   }
 
@@ -263,15 +376,20 @@ export class Store {
   }
 
   // Trades
+  /** Trades with their pillars (retired ones included, flagged inactive). */
   async listTrades(): Promise<Trade[]> {
-    return (await this.all("SELECT * FROM trades ORDER BY created_at")).map(toTrade);
+    const trades = (await this.all("SELECT * FROM trades ORDER BY created_at")).map(toTrade);
+    const byTrade = new Map(trades.map((t) => [t.id, t]));
+    for (const p of (await this.all("SELECT * FROM pillars ORDER BY created_at, rowid")).map(toPillar)) byTrade.get(p.tradeId)?.pillars.push(p);
+    return trades;
   }
 
   async createTrade(t: NewTrade): Promise<Trade> {
-    const trade: Trade = { id: newId(), preset: false, createdAt: nowIso(), ...t };
+    const { pillars = [], entities = [], ...rest } = t;
+    const trade: Trade = { id: newId(), preset: false, createdAt: nowIso(), ...rest, entities, pillars: [] };
     await this.run(
-      `INSERT INTO trades (id, name, thesis, keywords, tickers, strengthens, weakens, preset, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO trades (id, name, thesis, keywords, tickers, strengthens, weakens, entities, preset, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         trade.id,
         trade.name,
@@ -280,11 +398,41 @@ export class Store {
         json(trade.tickers),
         json(trade.strengthens),
         json(trade.weakens),
+        json(trade.entities),
         trade.preset ? 1 : 0,
         trade.createdAt,
       ],
     );
+    for (const p of pillars) trade.pillars.push(await this.addPillar(trade.id, p));
     return trade;
+  }
+
+  async setTradeEntities(id: string, entities: TradeEntity[]): Promise<void> {
+    await this.run("UPDATE trades SET entities = ? WHERE id = ?", [json(entities), id]);
+  }
+
+  async addPillar(tradeId: string, p: NewPillar): Promise<Pillar> {
+    const pillar: Pillar = {
+      id: newId(),
+      tradeId,
+      statement: p.statement,
+      signals: p.signals.map((sig, i) => ({ id: String(i + 1), ...sig })),
+      active: true,
+      createdAt: nowIso(),
+    };
+    await this.run("INSERT INTO pillars (id, trade_id, statement, signals, active, created_at) VALUES (?, ?, ?, ?, 1, ?)", [
+      pillar.id,
+      tradeId,
+      pillar.statement,
+      json(pillar.signals),
+      pillar.createdAt,
+    ]);
+    return pillar;
+  }
+
+  /** Retire a pillar: it stops being scored, but past impacts keep pointing at it. */
+  async setPillarActive(id: string, active: boolean): Promise<boolean> {
+    return (await this.run("UPDATE pillars SET active = ? WHERE id = ?", [active ? 1 : 0, id])) > 0;
   }
 
   async deleteTrade(id: string): Promise<boolean> {
@@ -501,16 +649,139 @@ export class Store {
     return Number(row?.total ?? 0);
   }
 
+  // Events
+  async createEvent(e: NewEvent): Promise<MimirEvent> {
+    const event: MimirEvent = { id: newId(), ...e, lastSeenAt: e.firstSeenAt };
+    await this.run("INSERT INTO events (id, title, type, entities, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)", [
+      event.id,
+      event.title,
+      event.type,
+      json(event.entities),
+      event.firstSeenAt,
+      event.lastSeenAt,
+    ]);
+    return event;
+  }
+
+  /** Record that an observation reports on an event; `how` is the step that matched it. */
+  async addEventSource(
+    eventId: string,
+    observationId: string,
+    how: "new" | "similar" | "model",
+    similarity: number | null,
+    embedding: Float32Array | null,
+    at: string,
+  ): Promise<void> {
+    await this.client.batch(
+      [
+        {
+          sql: "INSERT INTO event_sources (event_id, observation_id, how, similarity, embedding, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+          args: [eventId, observationId, how, similarity, embedding ? new Uint8Array(embedding.buffer, embedding.byteOffset, embedding.byteLength) : null, at],
+        },
+        { sql: "UPDATE events SET last_seen_at = MAX(last_seen_at, ?) WHERE id = ?", args: [at, eventId] },
+      ],
+      "write",
+    );
+  }
+
+  /** Embeddings of observations attached to events since `since`, for similarity search. */
+  async eventVectorsSince(since: string): Promise<{ eventId: string; vector: Float32Array; at: string }[]> {
+    const rows = await this.all("SELECT event_id, embedding, created_at FROM event_sources WHERE embedding IS NOT NULL AND created_at > ?", [since]);
+    return rows.map((r) => {
+      const buf = r.embedding as ArrayBuffer;
+      return { eventId: s(r.event_id), vector: new Float32Array(buf.slice(0)), at: s(r.created_at) };
+    });
+  }
+
+  async eventSummaries(ids: string[]): Promise<EventSummary[]> {
+    if (ids.length === 0) return [];
+    const marks = ids.map(() => "?").join(",");
+    const events = (await this.all(`SELECT * FROM events WHERE id IN (${marks})`, ids)).map(toEvent);
+    const titles = await this.all(
+      `SELECT es.event_id, o.title FROM event_sources es JOIN observations o ON o.id = es.observation_id
+       WHERE es.event_id IN (${marks}) ORDER BY es.created_at, es.rowid`,
+      ids,
+    );
+    const impacts = (await this.all(`SELECT * FROM impacts WHERE event_id IN (${marks}) ORDER BY created_at`, ids)).map(toImpact);
+    return ids.flatMap((id) => {
+      const e = events.find((x) => x.id === id);
+      return e ? [{ ...e, items: titles.filter((t) => s(t.event_id) === id).slice(0, 3).map((t) => s(t.title)), impacts: impacts.filter((i) => i.eventId === id) }] : [];
+    });
+  }
+
+  async eventIdForObservation(observationId: string): Promise<string | null> {
+    const [row] = await this.all("SELECT event_id FROM event_sources WHERE observation_id = ? LIMIT 1", [observationId]);
+    return row ? s(row.event_id) : null;
+  }
+
+  /** Events that produced an alert since `since`, newest first. */
+  async alertedEventIdsSince(since: string): Promise<string[]> {
+    const rows = await this.all(
+      "SELECT event_id, MAX(created_at) AS t FROM alerts WHERE event_id IS NOT NULL AND created_at > ? GROUP BY event_id ORDER BY t DESC",
+      [since],
+    );
+    return rows.map((r) => s(r.event_id));
+  }
+
+  async unlinkedAlertObservations(since: string): Promise<Observation[]> {
+    return (await this.all(
+      `SELECT o.* FROM observations o JOIN alerts a ON a.observation_id = o.id
+       WHERE a.event_id IS NULL AND a.created_at > ? GROUP BY o.id ORDER BY MIN(a.created_at), o.rowid`,
+      [since],
+    )).map(toObservation);
+  }
+
+  async linkAlertsToEvent(observationId: string, eventId: string): Promise<void> {
+    await this.run("UPDATE alerts SET event_id = ? WHERE observation_id = ? AND event_id IS NULL", [eventId, observationId]);
+  }
+
+  async eventImpacts(eventId: string): Promise<Impact[]> {
+    return (await this.all("SELECT * FROM impacts WHERE event_id = ? ORDER BY created_at", [eventId])).map(toImpact);
+  }
+
+  async insertImpact(i: Omit<Impact, "id">): Promise<Impact> {
+    const impact: Impact = { id: newId(), ...i };
+    await this.run(
+      `INSERT INTO impacts (id, event_id, observation_id, trade_id, pillar_id, effect, signal_id, rationale, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [impact.id, impact.eventId, impact.observationId, impact.tradeId, impact.pillarId, impact.effect, impact.signalId, impact.rationale, impact.createdAt],
+    );
+    return impact;
+  }
+
+  /** One reading per event and pillar, newest first; an upgrade isn't a second piece of evidence. */
+  async impactsSince(since: string): Promise<PillarEvidence[]> {
+    const rows = await this.all(
+      `WITH readings AS (
+         SELECT i.*, ROW_NUMBER() OVER (PARTITION BY event_id, trade_id, pillar_id ORDER BY created_at DESC, rowid DESC) AS latest
+         FROM impacts i WHERE i.created_at > ?
+       )
+       SELECT i.*, e.title FROM readings i JOIN events e ON e.id = i.event_id
+       WHERE i.latest = 1 ORDER BY i.created_at DESC`,
+      [since],
+    );
+    return rows.map((r) => ({
+      eventId: s(r.event_id),
+      tradeId: s(r.trade_id),
+      pillarId: sOrNull(r.pillar_id),
+      effect: s(r.effect) as Effect,
+      eventTitle: s(r.title),
+      rationale: s(r.rationale),
+      createdAt: s(r.created_at),
+    }));
+  }
+
   // Alerts
   async insertAlert(a: Omit<Alert, "id" | "createdAt">, createdAt = nowIso()): Promise<Alert> {
     const alert: Alert = { id: newId(), createdAt, ...a };
     await this.run(
-      `INSERT INTO alerts (id, observation_id, judgment_id, reason, score, target_key, delivered, delivery_error, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO alerts (id, observation_id, judgment_id, event_id, reason, score, target_key, delivered, delivery_error, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         alert.id,
         alert.observationId,
         alert.judgmentId,
+        alert.eventId ?? null,
         alert.reason,
         alert.score,
         alert.targetKey,
@@ -542,7 +813,7 @@ export class Store {
 
   /** Replay only: drop every observation, judgment and alert, keeping sources and watchlists. */
   async resetEvents(): Promise<void> {
-    for (const table of ["alerts", "judgment_targets", "judgments", "observations", "meta"]) await this.run(`DELETE FROM ${table}`);
+    for (const table of ["alerts", "impacts", "event_sources", "events", "judgment_targets", "judgments", "observations", "meta"]) await this.run(`DELETE FROM ${table}`);
   }
 
   async recentAlertTitles(since: string): Promise<string[]> {
