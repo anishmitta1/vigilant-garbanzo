@@ -121,6 +121,21 @@ describe("event grouping", () => {
     expect(Number(n.rows[0]!.n)).toBe(2);
   });
 
+  it.each([
+    ["NRC to Hold Regulatory Conference on Safety Issue at Comanche Peak Nuclear Plant", "NRC to Hold Regulatory Conference on Safety Issue at Surry Nuclear Plant"],
+    ["NRC Schedules Open House to Discuss Surry Nuclear Power Plant Performance", "NRC Schedules Open House to Discuss North Anna Nuclear Power Plant Performance"],
+    ["Treasury yields climb to highest since 2007", "Treasury yields climb to highest since 2026"],
+    ["Google signs a $40B nuclear deal", "Google signs a $40M nuclear deal"],
+  ])("does not auto-merge changed names or numbers even at identical similarity: %s", async (first, second) => {
+    const { store, source } = await setup();
+    const embedder: Embedder = { name: "identical", embed: async () => new Float32Array([1, 0]) };
+    await processItems({ ...deps(store), events: new EventIndex(embedder) }, source, [
+      { externalId: "first", title: first },
+      { externalId: "second", title: second },
+    ], { baseline: true });
+    expect((await store.client.execute("SELECT COUNT(*) AS n FROM events")).rows[0]!.n).toBe(2);
+  });
+
   it("remembers an earlier push even after more than five other developments and an embedding failure", async () => {
     const { store, trade, source, firm } = await setup();
     const scorer = stubScorer(() => [{ tradeId: trade.id, pillarId: firm.id, effect: "majorly_supports", signalId: null, rationale: "deal" }]);

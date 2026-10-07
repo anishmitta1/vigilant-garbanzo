@@ -127,6 +127,12 @@ export interface Placement {
   added: Impact[];
 }
 
+function autoMergeDetails(title: string): string {
+  const bare = title.replace(/\s[-|–—]\s[^-|–—]{2,40}$/, "");
+  // A similar template is not proof of the same action when capitalized names or numbers change.
+  return [...new Set((bare.match(/\b[A-Z][\p{L}\p{N}]*|[$€£]?\b\d+(?:[.,]\d+)*(?:[%\p{L}]+)?/gu) ?? []).map((word) => word.toLowerCase()))].sort().join("|");
+}
+
 /**
  * Attach an observation to an event: the one the model named, else (no model verdict) a near-identical one,
  * else a new event. Then record whatever impacts are new to that event.
@@ -142,7 +148,7 @@ export async function placeInEvent(
   const verdict = judgment.event;
   const joined = verdict
     ? (candidates.find((c) => c.id === verdict.sameAs) ?? null)
-    : (candidates.filter((c) => c.similarity >= GROUPING.autoMergeMin).sort((a, b) => b.similarity - a.similarity)[0] ?? null);
+    : (candidates.filter((c) => c.similarity >= GROUPING.autoMergeMin && [c.title, ...c.items].some((title) => autoMergeDetails(title) === autoMergeDetails(item.title))).sort((a, b) => b.similarity - a.similarity)[0] ?? null);
   const eventId =
     joined?.id ??
     (await store.createEvent({ title: verdict?.title ?? item.title, type: judgment.eventType, entities: verdict?.entities ?? [], firstSeenAt: at })).id;
