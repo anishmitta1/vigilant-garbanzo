@@ -26,6 +26,10 @@ export interface Config {
   materialMinScore: number;
   storyWindowHours: number;
   seedDefaults: boolean;
+  /** Group items into events (local embeddings + the model's same-event call) and record pillar impacts. */
+  eventGrouping: boolean;
+  /** "legacy": push on material verdicts; "events": push when an event newly moves a pillar majorly. */
+  alertMode: "legacy" | "events";
   /** Daily Bark digest at this local time ("HH:MM" in `digestTimeZone`); unset disables it. */
   digestTime?: string;
   digestTimeZone: string;
@@ -60,6 +64,12 @@ function timeZone(value: string): string {
   return value;
 }
 
+function alertMode(value: string | undefined): Config["alertMode"] {
+  if (value === undefined || value === "" || value === "legacy") return "legacy";
+  if (value === "events") return "events";
+  throw new Error(`Invalid ALERT_MODE (want legacy or events): ${value}`);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const llmKey = str(env.LLM_API_KEY);
   const ntfyTopic = str(env.NTFY_TOPIC);
@@ -87,6 +97,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     materialMinScore: num(env.MATERIAL_MIN_SCORE, 0.5),
     storyWindowHours: num(env.STORY_WINDOW_HOURS, 48),
     seedDefaults: env.SEED_DEFAULTS !== "false",
+    eventGrouping: env.EVENT_GROUPING !== "false",
+    alertMode: alertMode(env.ALERT_MODE),
     digestTime: digestTime(env.DIGEST_TIME),
     digestTimeZone: timeZone(str(env.DIGEST_TZ) ?? "America/Los_Angeles"),
     llm: llmKey

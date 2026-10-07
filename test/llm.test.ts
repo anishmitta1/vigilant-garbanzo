@@ -52,7 +52,7 @@ describe("llm scorer", () => {
   });
 
   it("passes trades to the model and maps trade directions", async () => {
-    const trade = { id: "tr1", name: "AI infra buildout", thesis: "Capex compounds", keywords: ["GPU"], tickers: ["NVDA"], strengthens: [], weakens: [], preset: true, createdAt: "" };
+    const trade = { id: "tr1", name: "AI infra buildout", thesis: "Capex compounds", keywords: ["GPU"], tickers: ["NVDA"], strengthens: [], weakens: [], entities: [], pillars: [], preset: true, createdAt: "" };
     const { calls, fetchImpl } = fakeLlm(() =>
       completion({
         event_type: "guidance_change",
@@ -70,6 +70,43 @@ describe("llm scorer", () => {
       { targetKey: "trade:tr1", name: "AI infra buildout", strength: 1, direction: "strengthens" },
       { targetKey: "entity:e1", name: "NVDA", strength: 1 },
     ]);
+  });
+
+  it("maps pillar impacts and the same-event call back to real ids", async () => {
+    const trade = {
+      id: "tr1", name: "Power", thesis: "", keywords: [], tickers: [], strengthens: [], weakens: [], preset: true, createdAt: "",
+      entities: [{ name: "Alphabet", aliases: ["Google"] }],
+      pillars: [
+        { id: "old", tradeId: "tr1", statement: "Retired.", signals: [], active: false, createdAt: "" },
+        { id: "pil-a", tradeId: "tr1", statement: "Big buyers pay for firm power.", signals: [{ id: "1", description: "PPA", effect: "majorly_supports" as const }], active: true, createdAt: "" },
+      ],
+    };
+    const candidate = { id: "evt-9", title: "Google–Constellation PPA", type: "deal", entities: [], firstSeenAt: "", lastSeenAt: "", items: ["a"], similarity: 0.4, alerted: true };
+    const { calls, fetchImpl } = fakeLlm(() =>
+      completion({
+        material: true, event_type: "deal", consequence: 0.8, urgency: 0.5, matched_targets: [], rationale: "r",
+        same_event: "E1", event_title: "PPA", event_entities: ["Alphabet"],
+        impacts: [
+          { trade: "trade:tr1", pillar: "P1", effect: "majorly_supports", signal: "P1.1", rationale: "deal" },
+          { trade: "trade:tr1", pillar: null, effect: "slightly_falsifies", rationale: "other" },
+          { trade: "trade:nope", pillar: "P1", effect: "majorly_supports" },
+          { trade: "trade:tr1", effect: "huge" },
+        ],
+      }),
+    );
+    const evidence = [{ tradeId: "tr1", pillarId: "pil-a", effect: "slightly_supports" as const, eventTitle: "Earlier deal", createdAt: new Date().toISOString() }];
+    const j = await createLlmScorer(llm, fetchImpl).judge({ ...obs, fetchedAt: new Date().toISOString() }, source, { ...watchlist, trades: [trade] }, { candidates: [candidate], evidence });
+    const sent = JSON.parse(JSON.parse(calls[0]?.init.body as string).messages[1].content);
+    expect(sent.tracked_targets[2].pillars).toEqual([
+      { id: "P1", axiom: "Big buyers pay for firm power.", signals: [{ id: "P1.1", effect: "majorly_supports", example: "PPA" }], recent_evidence: [expect.stringContaining("slightly_supports: Earlier deal")] },
+    ]);
+    expect(sent.open_events[0]).toMatchObject({ id: "E1", already_alerted: true });
+    expect(j.event).toEqual({ sameAs: "evt-9", title: "PPA", entities: ["Alphabet"] });
+    expect(j.impacts).toEqual([
+      { tradeId: "tr1", pillarId: "pil-a", effect: "majorly_supports", signalId: "1", rationale: "deal" },
+      { tradeId: "tr1", pillarId: null, effect: "slightly_falsifies", signalId: null, rationale: "other" },
+    ]);
+    expect(j.matches).toEqual([{ targetKey: "trade:tr1", name: "Power", strength: 1, direction: "mixed" }]);
   });
 
   it.each([

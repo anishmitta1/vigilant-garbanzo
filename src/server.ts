@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Store } from "./db.js";
 import { processItems, runSource, type PipelineDeps } from "./pipeline.js";
 import { listAdapters, parseSourceConfig } from "./sources/registry.js";
+import { EFFECTS, type Effect } from "./types.js";
 
 const ThemeBody = z.object({
   name: z.string().min(1),
@@ -11,6 +12,13 @@ const ThemeBody = z.object({
 });
 
 const terms = z.array(z.string().min(1)).default([]);
+const PillarBody = z.object({
+  statement: z.string().min(1),
+  signals: z
+    .array(z.object({ description: z.string().min(1), effect: z.enum(EFFECTS as [Effect, ...Effect[]]) }))
+    .default([]),
+});
+
 const TradeBody = z.object({
   name: z.string().min(1),
   thesis: z.string().default(""),
@@ -18,6 +26,8 @@ const TradeBody = z.object({
   tickers: terms,
   strengthens: terms,
   weakens: terms,
+  entities: z.array(z.object({ name: z.string().min(1), aliases: terms })).default([]),
+  pillars: z.array(PillarBody).default([]),
 });
 
 const EntityBody = z.object({
@@ -76,6 +86,17 @@ export function buildServer(store: Store, deps: PipelineDeps): FastifyInstance {
 
   app.get("/trades", async () => store.listTrades());
   app.post("/trades", async (req, reply) => reply.status(201).send(await store.createTrade(TradeBody.parse(req.body))));
+  // Pillars are only ever added or retired (never edited in place), so past impacts keep their meaning.
+  app.post("/trades/:id/pillars", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    if (!(await store.listTrades()).some((t) => t.id === id)) return reply.status(404).send({ error: "not found" });
+    return reply.status(201).send(await store.addPillar(id, PillarBody.parse(req.body)));
+  });
+  app.patch("/pillars/:id", async (req, reply) => {
+    const { active } = z.object({ active: z.boolean() }).parse(req.body);
+    const ok = await store.setPillarActive((req.params as { id: string }).id, active);
+    return ok ? reply.status(204).send() : reply.status(404).send({ error: "not found" });
+  });
   app.delete("/trades/:id", async (req, reply) =>
     (await store.deleteTrade(IdParam.parse(req.params).id)) ? reply.status(204).send() : reply.status(404).send(notFound),
   );

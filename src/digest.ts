@@ -153,7 +153,28 @@ function marketLines(m: DigestMarket): string[] {
 }
 
 /** Today's alerts, the strongest items that didn't alert, and pipeline health, sized for one Bark push. */
-export function buildDigest(rows: DigestRow[], opts: { dateLabel: string; failingSources: string[]; market?: DigestMarket }): Digest {
+/** Per trade, events the model found relevant but that fit none of its pillars: a cue to add one. */
+export interface PillarGap {
+  trade: string;
+  events: string[];
+}
+
+export async function pillarGaps(store: Store, since: string): Promise<PillarGap[]> {
+  const names = new Map((await store.listTrades()).map((t) => [t.id, t.name]));
+  const byTrade = new Map<string, Set<string>>();
+  for (const i of await store.impactsSince(since)) {
+    if (i.pillarId !== null || !names.has(i.tradeId)) continue;
+    const set = byTrade.get(i.tradeId) ?? new Set<string>();
+    set.add(i.eventTitle);
+    byTrade.set(i.tradeId, set);
+  }
+  return [...byTrade].map(([id, events]) => ({ trade: names.get(id)!, events: [...events] })).sort((a, b) => b.events.length - a.events.length);
+}
+
+export function buildDigest(
+  rows: DigestRow[],
+  opts: { dateLabel: string; failingSources: string[]; market?: DigestMarket; gaps?: PillarGap[] },
+): Digest {
   const alerted = rows.filter((r) => r.alerted);
   const nearMisses = rows.filter(isNearMiss);
   const modelCalls = rows.filter((r) => r.judgment.scorer.startsWith("llm:")).length;
@@ -173,6 +194,12 @@ export function buildDigest(rows: DigestRow[], opts: { dateLabel: string; failin
     for (const r of nearMisses.slice(0, MAX_LINES)) {
       lines.push(`• ${r.judgment.consequence.toFixed(2)} ${clip(r.title, 100)} [${nearMissReason(r)}]`);
       if (r.judgment.rationale) lines.push(`  ${clip(r.judgment.rationale, 140)}`);
+    }
+  }
+  if (opts.gaps && opts.gaps.length > 0) {
+    lines.push("", "FITS NO PILLAR (relevant, but no axiom covers it)");
+    for (const g of opts.gaps.slice(0, MAX_LINES)) {
+      lines.push(`• ${g.trade}: ${g.events.length} event${g.events.length === 1 ? "" : "s"}, e.g. ${clip(g.events[0]!, 90)}`);
     }
   }
   lines.push("", `Read ${rows.length} items · ${modelCalls} model calls`);
@@ -209,7 +236,7 @@ export async function composeDigest(
   const dateLabel = new Intl.DateTimeFormat("en-US", { timeZone, month: "short", day: "numeric" }).format(now);
   const rows = await store.digestRows(from);
   const market = opts.market ? await digestMarket(store, rows, now, opts.fetch) : undefined;
-  return buildDigest(rows, { dateLabel, failingSources, market });
+  return buildDigest(rows, { dateLabel, failingSources, market, gaps: await pillarGaps(store, from) });
 }
 
 /** Send the daily digest to Bark if it's due. Returns whether one was sent. */

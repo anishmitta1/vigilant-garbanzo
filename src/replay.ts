@@ -4,6 +4,7 @@ import type { Client, Row } from "@libsql/client";
 import type { DigestRow, Store } from "./db.js";
 import { isNearMiss, latencyMinutes, pushesSince } from "./digest.js";
 import type { Push } from "./market.js";
+import type { EventIndex } from "./events.js";
 import { processItems, type PipelineDeps } from "./pipeline.js";
 import { heuristicScorer } from "./scoring/heuristic.js";
 import type { JudgmentDraft, Scorer } from "./scoring/types.js";
@@ -89,6 +90,8 @@ export async function loadHistory(client: Client): Promise<HistoryRow[]> {
   }));
 }
 
+export type CachedVerdict = JudgmentDraft & { sameAsTitle?: string };
+
 /** Items worth re-asking the model about when testing a prompt: it called them material or near the bar. */
 export const isCandidate = (v: JudgmentDraft | null): boolean => v !== null && (v.material === true || v.consequence >= 0.3);
 
@@ -98,23 +101,30 @@ export const isCandidate = (v: JudgmentDraft | null): boolean => v !== null && (
  */
 export function historyScorer(
   rows: HistoryRow[],
-  opts: { model?: Scorer; all?: boolean; cache?: Map<string, JudgmentDraft> } = {},
+  opts: { model?: Scorer; all?: boolean; cache?: Map<string, CachedVerdict> } = {},
 ): Scorer & { modelCalls: () => number } {
   const saved = new Map(rows.map((r) => [key(r.sourceId, r.externalId), r.verdict]));
-  const cache = opts.cache ?? new Map<string, JudgmentDraft>();
+  const cache = opts.cache ?? new Map<string, CachedVerdict>();
   let calls = 0;
   return {
     name: opts.model ? `replay:${opts.model.name}` : "replay:saved",
     modelCalls: () => calls,
-    async judge(observation: Observation, source, watchlist) {
+    async judge(observation: Observation, source, watchlist, context) {
       const verdict = saved.get(key(observation.sourceId, observation.externalId)) ?? null;
       const { model } = opts;
       if (model && (opts.all || isCandidate(verdict))) {
+        const candidates = context?.candidates ?? [];
         const cached = cache.get(observation.title);
-        if (cached) return cached;
+        // Event ids differ between runs, so a cached same-event call is stored by the event's title.
+        if (cached) {
+          const { sameAsTitle, ...draft } = cached;
+          if (!draft.event) return draft;
+          return { ...draft, event: { ...draft.event, sameAs: candidates.find((c) => c.title === sameAsTitle)?.id ?? null } };
+        }
         calls++;
-        const fresh = await model.judge(observation, source, watchlist);
-        if (isModelVerdict(fresh)) cache.set(observation.title, fresh);
+        const fresh = await model.judge(observation, source, watchlist, context);
+        const sameAsTitle = candidates.find((c) => c.id === fresh.event?.sameAs)?.title;
+        if (isModelVerdict(fresh)) cache.set(observation.title, { ...fresh, ...(sameAsTitle ? { sameAsTitle } : {}) });
         return fresh;
       }
       return verdict ?? heuristicScorer.judge(observation, source, watchlist);
@@ -127,10 +137,22 @@ const refuse = (async () => {
 }) as typeof fetch;
 
 /** Wipes `store`'s events (it must be a scratch copy), then replays `rows` in order with the clock at each fetch time. */
-export async function replayHistory(store: Store, rows: HistoryRow[], opts: { scorer: Scorer; policy: PipelineDeps["policy"] }): Promise<ReplayResult> {
+export async function replayHistory(
+  store: Store,
+  rows: HistoryRow[],
+  opts: { scorer: Scorer; policy: PipelineDeps["policy"]; events?: EventIndex },
+): Promise<ReplayResult> {
   await store.resetEvents();
+  opts.events?.reset();
   const sources = new Map((await store.listSources()).map((s) => [s.id, s]));
-  const deps: PipelineDeps = { store, scorer: opts.scorer, policy: opts.policy, sourceContext: { fetch: refuse, userAgent: "mimir-replay" }, fetch: refuse };
+  const deps: PipelineDeps = {
+    store,
+    scorer: opts.scorer,
+    policy: opts.policy,
+    events: opts.events,
+    sourceContext: { fetch: refuse, userAgent: "mimir-replay" },
+    fetch: refuse,
+  };
   let skipped = 0;
   for (const row of rows) {
     const source = sources.get(row.sourceId);
@@ -159,7 +181,7 @@ export async function replayHistory(store: Store, rows: HistoryRow[], opts: { sc
   });
   const held: Partial<Record<HeldReason, number>> = {};
   for (const r of judged) if (r.judgment.held) held[r.judgment.held] = (held[r.judgment.held] ?? 0) + 1;
-  const scored = judged.filter((r) => !r.judgment.held || r.judgment.held === "cooldown" || r.judgment.held === "same_story");
+  const scored = judged.filter((r) => !r.judgment.held || ["cooldown", "same_story", "same_event"].includes(r.judgment.held));
   const from = rows[0]?.fetchedAt ?? epoch;
   const to = rows.at(-1)?.fetchedAt ?? epoch;
   return {

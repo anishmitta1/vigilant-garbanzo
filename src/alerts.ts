@@ -1,5 +1,5 @@
 import type { NtfyConfig } from "./config.js";
-import type { Judgment, Observation, Source, TargetMatch } from "./types.js";
+import { isMajor, type ImpactDraft, type Judgment, type Observation, type Source, type TargetMatch } from "./types.js";
 import type { Alert, AlertReason } from "./types.js";
 
 export interface AlertPolicy {
@@ -59,21 +59,30 @@ export function decideAlert(
   return best;
 }
 
+/** Events mode: alert when the item newly moves a pillar majorly, either way. Re-reports add no impacts, so never alert. */
+export function decideEventAlert(judgment: Pick<Judgment, "consequence">, added: Pick<ImpactDraft, "tradeId" | "effect">[]): AlertDecision | null {
+  const major = added.find((i) => isMajor(i.effect));
+  return major ? { reason: "direct", score: judgment.consequence, targetKey: `trade:${major.tradeId}`, material: true } : null;
+}
+
 export interface AlertPayload {
   type: "mimir.alert";
   alert: Alert;
   observation: Observation;
   judgment: Judgment;
   source: { id: string; name: string; type: string };
+  /** Pillars this item moved majorly, e.g. ["Big buyers pay for firm power."]. */
+  pillars?: string[];
 }
 
-export function buildPayload(alert: Alert, observation: Observation, judgment: Judgment, source: Source): AlertPayload {
+export function buildPayload(alert: Alert, observation: Observation, judgment: Judgment, source: Source, pillars: string[] = []): AlertPayload {
   return {
     type: "mimir.alert",
     alert,
     observation,
     judgment,
     source: { id: source.id, name: source.name, type: source.type },
+    ...(pillars.length > 0 ? { pillars } : {}),
   };
 }
 
@@ -164,7 +173,7 @@ export async function deliverBark(
   fetchImpl: typeof fetch = fetch,
   now: Date = new Date(),
 ): Promise<void> {
-  const { alert, observation, judgment, source } = payload;
+  const { alert, observation, judgment, source, pillars } = payload;
   const { title, outlet } = splitOutlet(observation.title, source);
   const footer = [outlet, publishedLine(observation.publishedAt, now)].filter(Boolean).join(" · ");
   const res = await fetchImpl(barkUrl.replace(/\/+$/, ""), {
@@ -172,7 +181,7 @@ export async function deliverBark(
     headers: { "Content-Type": "application/json; charset=utf-8" },
     body: JSON.stringify({
       title: title.slice(0, 250),
-      subtitle: `${alert.reason === "accumulated" ? "Building: " : ""}${directionLine(judgment.matches)}`,
+      subtitle: `${alert.reason === "accumulated" ? "Building: " : ""}${directionLine(judgment.matches)}${pillars?.length ? ` · ${pillars[0]}` : ""}`,
       body: [judgment.rationale, footer].filter(Boolean).join("\n"),
       level: barkLevel(alert),
       group: "Mimir",

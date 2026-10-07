@@ -1,4 +1,4 @@
-import type { NewSource, NewTheme, NewTrade } from "./db.js";
+import type { NewSource, NewTheme, NewTrade, Store } from "./db.js";
 
 export const PRESET_THEMES: NewTheme[] = [
   {
@@ -84,6 +84,267 @@ export const PRESET_TRADES: NewTrade[] = [
     weakens: ["dollar strengthens", "dollar rallies", "sells gold", "central bank selling", "outflows", "gold falls", "real yields rise"],
   },
 ];
+
+/** Entities and pillars (axioms) for each preset trade, keyed by trade name. */
+export const PRESET_PILLARS: Record<string, Pick<NewTrade, "entities" | "pillars">> = {
+  "AI infra buildout": {
+    entities: [
+      { name: "Nvidia", aliases: ["NVDA"] },
+      { name: "Broadcom", aliases: ["AVGO"] },
+      { name: "TSMC", aliases: ["TSM", "Taiwan Semiconductor"] },
+      { name: "AMD", aliases: [] },
+      { name: "Micron", aliases: ["MU"] },
+      { name: "Microsoft", aliases: ["MSFT", "Azure"] },
+      { name: "Meta", aliases: ["META", "Facebook"] },
+      { name: "Alphabet", aliases: ["Google", "GOOGL"] },
+      { name: "Amazon", aliases: ["AWS", "AMZN"] },
+      { name: "Oracle", aliases: ["ORCL"] },
+      { name: "CoreWeave", aliases: ["CRWV"] },
+      { name: "OpenAI", aliases: [] },
+      { name: "Anthropic", aliases: [] },
+      { name: "xAI", aliases: [] },
+      { name: "Commerce Department", aliases: ["BIS", "Bureau of Industry and Security"] },
+    ],
+    pillars: [
+      {
+        statement: "AI capex compounds.",
+        signals: [
+          { description: "A top-4 hyperscaler raises capex guidance, or an AI lab announces a multi-$10B compute commitment", effect: "majorly_supports" },
+          { description: "A large new data-center or compute deal (at least $1B)", effect: "slightly_supports" },
+          { description: "Capex guided flat, or a data-center project paused or delayed", effect: "slightly_falsifies" },
+          { description: "A top-4 hyperscaler cuts capex guidance, or a major lab cancels or cuts compute commitments", effect: "majorly_falsifies" },
+        ],
+      },
+      {
+        statement: "Compute is scarce.",
+        signals: [
+          { description: "A supplier says it is sold out or supply-constrained into next year", effect: "majorly_supports" },
+          { description: "Price cuts, inventory build-up, or glut/oversupply commentary from Nvidia, TSMC or memory makers", effect: "majorly_falsifies" },
+        ],
+      },
+      {
+        statement: "Suppliers capture the spend.",
+        signals: [
+          { description: "Nvidia, TSMC, Broadcom or Micron beat and raise", effect: "majorly_supports" },
+          { description: "A major supplier guides down on AI demand", effect: "majorly_falsifies" },
+        ],
+      },
+      {
+        statement: "The biggest markets stay open.",
+        signals: [
+          { description: "Export licenses granted or restrictions eased", effect: "slightly_supports" },
+          { description: "New export bans or restrictions on AI chips to major buyers", effect: "majorly_falsifies" },
+        ],
+      },
+    ],
+  },
+  "Crypto clarity": {
+    entities: [
+      { name: "SEC", aliases: ["Securities and Exchange Commission"] },
+      { name: "CFTC", aliases: ["Commodity Futures Trading Commission"] },
+      { name: "Congress", aliases: ["Senate Banking Committee", "House Financial Services Committee"] },
+      { name: "Coinbase", aliases: ["COIN"] },
+      { name: "Robinhood", aliases: ["HOOD"] },
+      { name: "Strategy", aliases: ["MicroStrategy", "MSTR"] },
+      { name: "Circle", aliases: ["CRCL", "USDC"] },
+      { name: "Tether", aliases: ["USDT"] },
+      { name: "BlackRock", aliases: ["IBIT"] },
+    ],
+    pillars: [
+      {
+        statement: "Crypto law gets written.",
+        signals: [
+          { description: "A market-structure or stablecoin bill passes a chamber or is signed into law", effect: "majorly_supports" },
+          { description: "A crypto bill clears committee", effect: "slightly_supports" },
+          { description: "A crypto bill fails or stalls indefinitely", effect: "majorly_falsifies" },
+        ],
+      },
+      {
+        statement: "Regulators accommodate crypto.",
+        signals: [
+          { description: "ETF approvals, enforcement cases dropped, or charters granted", effect: "majorly_supports" },
+          { description: "A new major enforcement action or crackdown", effect: "majorly_falsifies" },
+        ],
+      },
+      {
+        statement: "Institutions keep buying.",
+        signals: [
+          { description: "Record ETF inflows, or a major institution launches crypto products", effect: "slightly_supports" },
+          { description: "A major exchange hack, a stablecoin depeg, or record outflows", effect: "majorly_falsifies" },
+        ],
+      },
+    ],
+  },
+  "Yield curve unwinding": {
+    entities: [
+      { name: "Federal Reserve", aliases: ["Fed", "FOMC"] },
+      { name: "US Treasury", aliases: ["Treasury Department"] },
+      { name: "Congressional Budget Office", aliases: ["CBO"] },
+    ],
+    pillars: [
+      {
+        statement: "The Fed eases the front end.",
+        signals: [
+          { description: "A larger-than-expected rate cut, or a dovish shift in guidance", effect: "majorly_supports" },
+          { description: "A rate hike, or the Fed signals the end of cuts or hikes ahead", effect: "majorly_falsifies" },
+        ],
+      },
+      {
+        statement: "Long-end supply outruns demand.",
+        signals: [
+          { description: "A larger refunding or coupon issuance, or a notably weak long-end auction", effect: "majorly_supports" },
+          { description: "Issuance cut or shifted to bills, buybacks expanded, or a strong long-end auction", effect: "majorly_falsifies" },
+        ],
+      },
+      {
+        statement: "Deficits stay large.",
+        signals: [
+          { description: "A deficit-widening bill passes, or a CBO upward revision", effect: "slightly_supports" },
+          { description: "A credible deficit-reduction deal", effect: "slightly_falsifies" },
+        ],
+      },
+      {
+        statement: "The long end is left to the market.",
+        signals: [
+          { description: "A recession signal or flight to safety pulls long yields sharply down", effect: "slightly_falsifies" },
+          { description: "Yield-curve control or explicit long-end suppression", effect: "majorly_falsifies" },
+        ],
+      },
+    ],
+  },
+  "Power & nuclear demand": {
+    entities: [
+      { name: "Constellation Energy", aliases: ["CEG", "Constellation"] },
+      { name: "Vistra", aliases: ["VST"] },
+      { name: "Talen Energy", aliases: ["TLN"] },
+      { name: "NRG", aliases: [] },
+      { name: "GE Vernova", aliases: ["GEV"] },
+      { name: "Oklo", aliases: ["OKLO"] },
+      { name: "NuScale", aliases: ["SMR"] },
+      { name: "Cameco", aliases: ["CCJ"] },
+      { name: "BWXT", aliases: ["BWX Technologies"] },
+      { name: "NRC", aliases: ["Nuclear Regulatory Commission"] },
+      { name: "FERC", aliases: ["Federal Energy Regulatory Commission"] },
+      { name: "Department of Energy", aliases: ["DOE"] },
+      { name: "PJM", aliases: [] },
+      { name: "ERCOT", aliases: [] },
+      { name: "Alphabet", aliases: ["Google", "GOOGL"] },
+      { name: "Microsoft", aliases: ["MSFT"] },
+      { name: "Amazon", aliases: ["AWS", "AMZN"] },
+      { name: "Meta", aliases: ["META"] },
+    ],
+    pillars: [
+      {
+        statement: "Power demand grows structurally.",
+        signals: [
+          { description: "A grid operator or major utility raises its load forecast materially, or capacity auction prices hit a record", effect: "majorly_supports" },
+          { description: "Load forecasts cut, or big data-center loads withdrawn", effect: "majorly_falsifies" },
+        ],
+      },
+      {
+        statement: "Big buyers pay for firm power.",
+        signals: [
+          { description: "A hyperscaler signs a multi-year PPA or nuclear deal (restart, uprate, SMR)", effect: "majorly_supports" },
+          { description: "A major PPA cancelled or renegotiated down, or hyperscalers move to self-supply that bypasses IPPs", effect: "majorly_falsifies" },
+        ],
+      },
+      {
+        statement: "New generation gets built.",
+        signals: [
+          { description: "NRC approves a license or restart, or DOE funds nuclear", effect: "majorly_supports" },
+          { description: "FERC rejects co-location deals, a license is denied, or capacity prices are capped", effect: "majorly_falsifies" },
+        ],
+      },
+      {
+        statement: "Equipment makers set the price.",
+        signals: [
+          { description: "Record turbine or grid-equipment orders or backlog", effect: "slightly_supports" },
+          { description: "Order cancellations or margin pressure at equipment makers", effect: "slightly_falsifies" },
+        ],
+      },
+    ],
+  },
+  "Tariffs & reshoring": {
+    entities: [
+      { name: "White House", aliases: ["President Trump", "Trump administration"] },
+      { name: "USTR", aliases: ["US Trade Representative"] },
+      { name: "Commerce Department", aliases: [] },
+      { name: "Supreme Court", aliases: ["Court of International Trade", "CIT"] },
+      { name: "Caterpillar", aliases: ["CAT"] },
+      { name: "Eaton", aliases: ["ETN"] },
+      { name: "Rockwell Automation", aliases: ["ROK"] },
+      { name: "Nucor", aliases: ["NUE"] },
+      { name: "Steel Dynamics", aliases: ["STLD"] },
+      { name: "Parker-Hannifin", aliases: ["PH"] },
+      { name: "Emerson", aliases: ["EMR"] },
+    ],
+    pillars: [
+      {
+        statement: "Tariffs persist.",
+        signals: [
+          { description: "New or higher tariffs imposed (Section 232/301 etc.)", effect: "majorly_supports" },
+          { description: "Tariffs struck down by courts, broadly paused, or cut in a trade deal", effect: "majorly_falsifies" },
+        ],
+      },
+      {
+        statement: "Capacity comes home.",
+        signals: [
+          { description: "A large (at least $1B) US factory investment announced", effect: "majorly_supports" },
+          { description: "A US plant cancelled or delayed", effect: "slightly_falsifies" },
+        ],
+      },
+      {
+        statement: "Industrial policy keeps paying.",
+        signals: [
+          { description: "CHIPS- or IRA-style grants awarded", effect: "slightly_supports" },
+          { description: "Industrial-policy programs repealed or funding clawed back", effect: "majorly_falsifies" },
+        ],
+      },
+    ],
+  },
+  "Gold & de-dollarization": {
+    entities: [
+      { name: "People's Bank of China", aliases: ["PBoC"] },
+      { name: "Reserve Bank of India", aliases: ["RBI"] },
+      { name: "World Gold Council", aliases: ["WGC"] },
+      { name: "BRICS", aliases: [] },
+      { name: "US Treasury", aliases: [] },
+      { name: "Federal Reserve", aliases: ["Fed"] },
+    ],
+    pillars: [
+      {
+        statement: "Central banks accumulate gold.",
+        signals: [
+          { description: "A central bank announces large purchases, or WGC reports record official buying", effect: "majorly_supports" },
+          { description: "A major central bank sells gold reserves", effect: "majorly_falsifies" },
+        ],
+      },
+      {
+        statement: "The dollar's reserve role erodes.",
+        signals: [
+          { description: "Sanctions expand, the US is downgraded, or a fiscal-crisis headline", effect: "slightly_supports" },
+          { description: "A major non-dollar settlement initiative is abandoned, or a strong safe-haven dollar rally", effect: "majorly_falsifies" },
+        ],
+      },
+      {
+        statement: "Real yields stay contained.",
+        signals: [
+          { description: "Real yields rise sharply", effect: "slightly_falsifies" },
+        ],
+      },
+    ],
+  },
+};
+
+/** Give preset trades created before pillars existed their default pillars and entities, once. */
+export async function addPresetPillars(store: Store): Promise<void> {
+  for (const t of await store.listTrades()) {
+    const defaults = t.preset ? PRESET_PILLARS[t.name] : undefined;
+    if (!defaults || t.pillars.length > 0) continue;
+    for (const p of defaults.pillars ?? []) await store.addPillar(t.id, p);
+    if (t.entities.length === 0) await store.setTradeEntities(t.id, defaults.entities ?? []);
+  }
+}
 
 const news = (name: string, query: string): NewSource => ({
   type: "google-news",

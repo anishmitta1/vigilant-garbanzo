@@ -40,7 +40,7 @@ describe("heuristic scorer", () => {
   });
 });
 
-const presetTrades: Trade[] = PRESET_TRADES.map((t, i) => ({ ...t, id: `tr${i}`, preset: true, createdAt: "" }));
+const presetTrades: Trade[] = PRESET_TRADES.map((t, i) => ({ ...t, id: `tr${i}`, preset: true, createdAt: "", entities: [], pillars: [] }));
 const tradeWatchlist: Watchlist = { themes: [], entities: [], trades: presetTrades };
 const tradeNamed = (name: string) => presetTrades.find((t) => t.name === name)!;
 
