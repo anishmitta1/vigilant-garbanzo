@@ -188,25 +188,25 @@ describe("event grouping", () => {
     expect(outsideWindow).toEqual([]);
   });
 
-  it("does not let a re-report create a major upgrade, a new pillar impact, or an accumulated alert", async () => {
+  it("does not let a re-report of an alerted event create a major upgrade, a new pillar impact, or an accumulated alert", async () => {
     const { store, trade, source, firm, build } = await setup();
     let call = 0;
     const scorer: Scorer = {
       name: "test",
       async judge(o, _s, _w, context) {
         return {
-          scorer: "test", eventType: "deal", consequence: 0.5, urgency: 0.5,
-          material: ++call > 1, matches: [{ targetKey: `trade:${trade.id}`, name: trade.name, strength: 1, direction: "strengthens" }], rationale: "deal",
+          scorer: "test", eventType: "deal", consequence: 0.8, urgency: 0.5,
+          material: true, matches: [{ targetKey: `trade:${trade.id}`, name: trade.name, strength: 1, direction: "strengthens" }], rationale: "deal",
           event: { sameAs: context?.candidates?.[0]?.id ?? null, title: o.title, entities: [] },
           impacts: [
-            { tradeId: trade.id, pillarId: firm.id, effect: call === 1 ? "slightly_supports" : "majorly_supports", signalId: null, rationale: "deal" },
+            { tradeId: trade.id, pillarId: firm.id, effect: ++call === 1 ? "slightly_supports" : "majorly_supports", signalId: null, rationale: "deal" },
             ...(call > 1 ? [{ tradeId: trade.id, pillarId: build.id, effect: "majorly_supports" as const, signalId: null, rationale: "re-rated" }] : []),
           ],
         };
       },
     };
     const d = { ...deps(store), scorer, events: new EventIndex(wordEmbedder) };
-    await processItems(d, source, [{ externalId: "first", title: "Google signs Constellation PPA" }]);
+    expect((await processItems(d, source, [{ externalId: "first", title: "Google signs Constellation PPA" }])).alerts).toHaveLength(1);
     const copy = await processItems(d, source, [{ externalId: "copy", title: "Google signs Constellation PPA in long-term nuclear deal" }]);
     expect(copy.alerts).toHaveLength(0);
     const eventId = (await store.client.execute("SELECT id FROM events")).rows[0]!.id as string;
@@ -214,6 +214,32 @@ describe("event grouping", () => {
     const targets = await store.client.execute("SELECT created_at FROM judgment_targets ORDER BY rowid");
     expect(targets.rows).toHaveLength(2);
     expect(targets.rows[1]!.created_at).toBe(new Date(0).toISOString());
+  });
+
+  it("lets a later report push once when a thin first report of the event did not", async () => {
+    const { store, trade, source, firm } = await setup();
+    let call = 0;
+    const scorer: Scorer = {
+      name: "test",
+      async judge(o, _s, _w, context) {
+        const first = ++call === 1;
+        return {
+          scorer: "test", eventType: "earnings", consequence: first ? 0.05 : 0.7, urgency: 0.5, material: !first,
+          matches: [{ targetKey: `trade:${trade.id}`, name: trade.name, strength: 1, direction: "strengthens" }], rationale: "results",
+          event: { sameAs: context?.candidates?.[0]?.id ?? null, title: o.title, entities: ["Samsung"] },
+          impacts: first ? [] : [{ tradeId: trade.id, pillarId: firm.id, effect: "majorly_supports", signalId: null, rationale: "profit jumps" }],
+        };
+      },
+    };
+    const d = { ...deps(store), scorer, events: new EventIndex(wordEmbedder) };
+    expect((await processItems(d, source, [{ externalId: "thin", title: "Samsung Electronics Announces Earnings Guidance for Third Quarter" }])).alerts).toHaveLength(0);
+    expect((await processItems(d, source, [{ externalId: "detail", title: "Samsung third quarter profit jumps nine-fold on AI memory" }])).alerts).toHaveLength(1);
+    expect((await processItems(d, source, [{ externalId: "again", title: "Samsung third quarter profit soars on AI memory demand" }])).alerts).toHaveLength(0);
+    const rows = await store.digestRows(new Date(0).toISOString());
+    expect(rows.find((r) => r.title.includes("soars"))?.judgment.held).toBe("same_event");
+    expect((await store.client.execute("SELECT COUNT(*) AS n FROM events")).rows[0]!.n).toBe(1);
+    const eventId = (await store.client.execute("SELECT id FROM events")).rows[0]!.id as string;
+    expect(await store.eventImpacts(eventId)).toHaveLength(1);
   });
 
   it("keeps a new decision separate even when it has nearly the same wording as the earlier event", async () => {
