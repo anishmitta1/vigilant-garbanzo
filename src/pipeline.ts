@@ -12,7 +12,7 @@ import {
 import type { NtfyConfig } from "./config.js";
 import type { PillarEvidence, Store } from "./db.js";
 import { embedText, findCandidates, placeInEvent, type EventCandidate, type EventIndex, type Placement } from "./events.js";
-import { freshnessHold, type FreshnessCheck } from "./freshness.js";
+import { freshnessHold, publisherFeedEvidence, type FreshnessCheck } from "./freshness.js";
 import { normalize, sameStory } from "./preprocess.js";
 import { heuristicScorer, namesWatched } from "./scoring/heuristic.js";
 import type { Triage } from "./scoring/triage.js";
@@ -42,7 +42,7 @@ export interface PipelineDeps {
   /** Event grouping; without it, items are judged one by one as before. */
   events?: EventIndex;
   sourceContext: SourceContext;
-  /** Checks a Google News item's publisher page before it can push; replay leaves it out. */
+  /** Verifies new public information before any source can alert; offline replay leaves it out. */
   freshness?: FreshnessCheck;
   webhookUrl?: string;
   ntfy?: NtfyConfig;
@@ -143,9 +143,22 @@ export async function processItems(
       await place(judgment);
       continue;
     }
-    const pushable = judgment.material === true || (judgment.impacts ?? []).some((i) => isMajor(i.effect));
-    const freshHeld = source.type === "google-news" && pushable && deps.freshness
-      ? await freshnessHold(deps.freshness, observation.url, observation.title, nowMs, policy.maxAlertAgeHours ?? 48)
+    const priorWeakSums = new Map<string, number>();
+    for (const m of judgment.matches) {
+      priorWeakSums.set(m.targetKey, await store.weakSignalSum(m.targetKey, since, policy.weakSignalFloor, policy.alertThreshold));
+    }
+    const pushable = policy.alertMode === "events"
+      ? decideEventAlert(judgment, judgment.impacts ?? []) !== null
+      : decideAlert(judgment, priorWeakSums, policy) !== null;
+    const hasDelivery = deps.webhookUrl || deps.ntfy || deps.barkUrl || deps.slackWebhookUrl;
+    const freshHeld = pushable && (deps.freshness || hasDelivery)
+      ? await freshnessHold({ ...(deps.freshness ?? { read: async () => ({ url: null, dates: [], text: "", error: "Novelty checker not configured" }) }), record: (decision) => {
+          judgment.rationale += `\nNovelty check: ${decision.rationale}${decision.newFact ? ` New fact: ${decision.newFact}` : ""}${decision.firstPublicAt ? ` First public: ${decision.firstPublicAt}` : ""}${decision.sources.map((s) => ` [${s.url}: ${s.quote}]`).join("")}`;
+          deps.freshness?.record?.(decision);
+        } }, observation.url, observation.title, nowMs, policy.maxAlertAgeHours ?? 48, {
+          events: [...candidates].sort((a, b) => b.similarity - a.similarity).slice(0, 20).map((c) => ({ title: c.title, firstSeenAt: c.firstSeenAt, items: c.items.slice(0, 3) })),
+          publisherFeed: publisherFeedEvidence(source, observation),
+        })
       : undefined;
     if (freshHeld) {
       deps.log?.(`freshness: held ${freshHeld} ${observation.title}`);
@@ -162,10 +175,6 @@ export async function processItems(
       judgment.held = "same_event";
       await store.insertJudgment(judgment, BASELINE_SIGNAL_AT);
       continue;
-    }
-    const priorWeakSums = new Map<string, number>();
-    for (const m of judgment.matches) {
-      priorWeakSums.set(m.targetKey, await store.weakSignalSum(m.targetKey, since, policy.weakSignalFloor, policy.alertThreshold));
     }
     await store.insertJudgment(judgment);
 
