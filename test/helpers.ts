@@ -2,6 +2,12 @@ import { createClient } from "@libsql/client";
 import { Store } from "../src/db.js";
 import type { PipelineDeps } from "../src/pipeline.js";
 import { heuristicScorer } from "../src/scoring/heuristic.js";
+import type { FreshnessCheck } from "../src/freshness.js";
+
+export const verifiedFreshness: FreshnessCheck = {
+  read: async (url) => ({ url, dates: [], text: "Company announced a new binding deal today." }),
+  judge: async (_title, evidence, now) => ({ fresh: true, firstPublicAt: now, originUrl: evidence.url!, newFact: "New binding deal", rationale: "Newly announced", sources: [{ url: evidence.url!, quote: evidence.text }] }),
+};
 
 export async function memoryStore(): Promise<Store> {
   const store = new Store(createClient({ url: ":memory:" }));

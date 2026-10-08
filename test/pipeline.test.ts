@@ -3,7 +3,7 @@ import { isDue, processItems, runSource } from "../src/pipeline.js";
 import { sameStory } from "../src/preprocess.js";
 import { buildServer } from "../src/server.js";
 import type { Source } from "../src/types.js";
-import { deps, fakeFetch, memoryStore } from "./helpers.js";
+import { deps, fakeFetch, memoryStore, verifiedFreshness } from "./helpers.js";
 
 async function setup() {
   const store = await memoryStore();
@@ -20,7 +20,7 @@ describe("pipeline", () => {
       hooks.push(JSON.parse(String(init?.body)));
       return new Response("ok");
     }) as typeof fetch;
-    const d = deps(store, { webhookUrl: "https://hooks.example.com/x", fetch: fetchImpl });
+    const d = deps(store, { webhookUrl: "https://hooks.example.com/x", fetch: fetchImpl, freshness: verifiedFreshness });
 
     const items = [
       { externalId: "1", title: "Nvidia raises full-year guidance", url: "https://a.com/1" },
@@ -124,6 +124,7 @@ describe("ntfy delivery", () => {
     const d = deps(store, {
       webhookUrl: "https://hooks.example.com/x",
       ntfy: { url: "https://ntfy.example/", topic: "mimir-test", token: "tk" },
+      freshness: verifiedFreshness,
       fetch: fetchImpl,
     });
     const result = await processItems(d, source, [{ externalId: "1", title: "Nvidia raises full-year guidance", url: "https://a.com/1" }]);
@@ -148,7 +149,7 @@ describe("bark delivery", () => {
       calls.push({ url, init });
       return new Response(JSON.stringify({ code: 200, message: "success" }));
     }) as unknown as typeof fetch;
-    const d = deps(store, { barkUrl: "https://api.day.app/KEY/", fetch: fetchImpl });
+    const d = deps(store, { barkUrl: "https://api.day.app/KEY/", fetch: fetchImpl, freshness: verifiedFreshness });
     const result = await processItems(d, source, [{ externalId: "1", title: "Nvidia raises full-year guidance", url: "https://a.com/1" }]);
 
     expect(calls[0]?.url).toBe("https://api.day.app/KEY");
@@ -172,7 +173,7 @@ describe("slack delivery", () => {
       calls.push({ url, init });
       return new Response("ok");
     }) as unknown as typeof fetch;
-    const d = deps(store, { slackWebhookUrl: "https://hooks.slack.com/services/T/B/X", fetch: fetchImpl });
+    const d = deps(store, { slackWebhookUrl: "https://hooks.slack.com/services/T/B/X", fetch: fetchImpl, freshness: verifiedFreshness });
     const result = await processItems(d, source, [{ externalId: "1", title: "MSFT raises capex for data center & power", url: "https://a.com/1" }]);
 
     expect(result.alerts[0]).toMatchObject({ targetKey: expect.stringMatching(/^trade:/), delivered: true });
@@ -250,10 +251,10 @@ describe("bark gating", () => {
       titles.push((JSON.parse(String(init.body)) as { title: string }).title);
       return new Response("{}");
     }) as unknown as typeof fetch;
-    const d = deps(store, { barkUrl: "https://api.day.app/KEY/", barkMinScore: 0.9, fetch: fetchImpl });
+    const d = deps(store, { barkUrl: "https://api.day.app/KEY/", barkMinScore: 0.9, fetch: fetchImpl, freshness: verifiedFreshness });
     const result = await processItems(d, source, [
-      { externalId: "1", title: "Nvidia raises full-year guidance" },
-      { externalId: "2", title: "Nvidia files for Chapter 11 bankruptcy" },
+      { externalId: "1", title: "Nvidia raises full-year guidance", url: "https://a.com/1" },
+      { externalId: "2", title: "Nvidia files for Chapter 11 bankruptcy", url: "https://a.com/2" },
     ]);
     expect(result.alerts).toHaveLength(2);
     expect(titles).toEqual(["Nvidia files for Chapter 11 bankruptcy"]);
@@ -268,8 +269,8 @@ describe("bark materiality", () => {
       pushes++;
       return new Response("{}");
     }) as unknown as typeof fetch;
-    const d = deps(store, { barkUrl: "https://api.day.app/KEY/", barkRequiresMaterial: true, fetch: fetchImpl });
-    const result = await processItems(d, source, [{ externalId: "1", title: "Nvidia files for Chapter 11 bankruptcy" }]);
+    const d = deps(store, { barkUrl: "https://api.day.app/KEY/", barkRequiresMaterial: true, fetch: fetchImpl, freshness: verifiedFreshness });
+    const result = await processItems(d, source, [{ externalId: "1", title: "Nvidia files for Chapter 11 bankruptcy", url: "https://a.com/1" }]);
     expect(result.alerts).toHaveLength(1);
     expect(pushes).toBe(0);
     const [stored] = await store.listAlerts(1);
