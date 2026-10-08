@@ -106,8 +106,9 @@ export async function findCandidates(store: Store, index: EventIndex, vector: Fl
     .sort((a, b) => b[1] - a[1])
     .slice(0, GROUPING.maxSimilar)
     .map(([id]) => id);
-  const alerted = await store.alertedEventIdsSince(new Date(nowMs - GROUPING.alertedWindowHours * 3600_000).toISOString());
-  const ids = [...new Set([...similar, ...alerted])];
+  const recent = await store.alertedEventIdsSince(new Date(nowMs - GROUPING.alertedWindowHours * 3600_000).toISOString());
+  const alerted = await store.alertedEventIdsSince(new Date(nowMs - GROUPING.windowHours * 3600_000).toISOString());
+  const ids = [...new Set([...similar, ...recent])];
   return (await store.eventSummaries(ids)).map((e) => ({ ...e, similarity: sims.get(e.id) ?? 0, alerted: alerted.includes(e.id) }));
 }
 
@@ -161,8 +162,9 @@ export async function placeInEvent(
   if (vector) index.add(eventId, vector, nowMs);
   const existing = joined ? await store.eventImpacts(eventId) : [];
   const added: Impact[] = [];
-  // sameAs identifies a re-report, not an independent development. It cannot add evidence by re-rating it.
-  for (const d of newImpacts(existing, joined ? [] : (judgment.impacts ?? []))) {
+  // Once an event has alerted, a re-report can't add evidence by re-rating it. Before that, a later report
+  // with the details can still add what a thin first report missed.
+  for (const d of newImpacts(existing, joined?.alerted ? [] : (judgment.impacts ?? []))) {
     added.push(await store.insertImpact({ ...d, eventId, observationId: item.observationId, createdAt: at }));
   }
   return { eventId, joined, added };

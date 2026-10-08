@@ -156,7 +156,7 @@ export async function processItems(
       continue;
     }
     const placed = await place(judgment);
-    if (placed?.joined) {
+    if (placed?.joined?.alerted) {
       judgment.material = false;
       judgment.impacts = [];
       judgment.held = "same_event";
