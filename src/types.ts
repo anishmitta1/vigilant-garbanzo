@@ -139,7 +139,7 @@ export interface Judgment {
   createdAt: string;
 }
 
-export type HeldReason = "stale" | "baseline" | "cooldown" | "same_story" | "same_event" | "triaged";
+export type HeldReason = "stale" | "baseline" | "cooldown" | "same_story" | "same_event" | "triaged" | "freshness_unverified";
 
 export interface EventVerdict {
   /** Id of the candidate event this item reports on, or null for a new development. */

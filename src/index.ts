@@ -3,6 +3,7 @@ import { openStore, type Store } from "./db.js";
 import { maybeSendDigest } from "./digest.js";
 import { runDueSources, type PipelineDeps } from "./pipeline.js";
 import { createLocalEmbedder, EventIndex, warmEventMemory } from "./events.js";
+import { createLlmFreshness, createPublisherReader } from "./freshness.js";
 import { addPresetPillars, DEFAULT_SOURCES, PRESET_PILLARS, PRESET_THEMES, PRESET_TRADES, RETIRED_SOURCES } from "./presets.js";
 import { heuristicScorer } from "./scoring/heuristic.js";
 import { createLlmScorer } from "./scoring/llm.js";
@@ -38,6 +39,7 @@ export function createDeps(config: Config, store: Store): PipelineDeps {
     policy: config,
     events: config.eventGrouping ? new EventIndex(createLocalEmbedder()) : undefined,
     sourceContext: { fetch, userAgent: config.userAgent },
+    freshness: { read: createPublisherReader(config.userAgent), judge: config.llm ? createLlmFreshness(config.llm) : undefined },
     webhookUrl: config.alertWebhookUrl,
     ntfy: config.ntfy,
     barkUrl: config.barkUrl,

@@ -12,6 +12,7 @@ import {
 import type { NtfyConfig } from "./config.js";
 import type { PillarEvidence, Store } from "./db.js";
 import { embedText, findCandidates, placeInEvent, type EventCandidate, type EventIndex, type Placement } from "./events.js";
+import { freshnessHold, type FreshnessCheck } from "./freshness.js";
 import { normalize, sameStory } from "./preprocess.js";
 import { heuristicScorer, namesWatched } from "./scoring/heuristic.js";
 import type { Triage } from "./scoring/triage.js";
@@ -41,6 +42,8 @@ export interface PipelineDeps {
   /** Event grouping; without it, items are judged one by one as before. */
   events?: EventIndex;
   sourceContext: SourceContext;
+  /** Checks a Google News item's publisher page before it can push; replay leaves it out. */
+  freshness?: FreshnessCheck;
   webhookUrl?: string;
   ntfy?: NtfyConfig;
   barkUrl?: string;
@@ -137,6 +140,18 @@ export async function processItems(
     const judgment = { ...scored, ...(held ? { held } : {}), id: newId(), observationId: observation.id, createdAt: at };
     if (held) {
       await store.insertJudgment(judgment, held === "stale" ? new Date(observation.publishedAt!).toISOString() : BASELINE_SIGNAL_AT);
+      await place(judgment);
+      continue;
+    }
+    const pushable = judgment.material === true || (judgment.impacts ?? []).some((i) => isMajor(i.effect));
+    const freshHeld = source.type === "google-news" && pushable && deps.freshness
+      ? await freshnessHold(deps.freshness, observation.url, observation.title, nowMs, policy.maxAlertAgeHours ?? 48)
+      : undefined;
+    if (freshHeld) {
+      deps.log?.(`freshness: held ${freshHeld} ${observation.title}`);
+      judgment.held = freshHeld;
+      judgment.impacts = [];
+      await store.insertJudgment(judgment, BASELINE_SIGNAL_AT);
       await place(judgment);
       continue;
     }
