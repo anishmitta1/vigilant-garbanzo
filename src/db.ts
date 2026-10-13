@@ -300,6 +300,7 @@ export type NewEvent = Omit<MimirEvent, "id" | "lastSeenAt">;
 export interface EventSummary extends MimirEvent {
   /** A few of its headlines, earliest first. */
   items: string[];
+  reports?: Pick<Observation, "title" | "url" | "publishedAt" | "fetchedAt">[];
   impacts?: Impact[];
 }
 
@@ -698,14 +699,15 @@ export class Store {
     const marks = ids.map(() => "?").join(",");
     const events = (await this.all(`SELECT * FROM events WHERE id IN (${marks})`, ids)).map(toEvent);
     const titles = await this.all(
-      `SELECT es.event_id, o.title FROM event_sources es JOIN observations o ON o.id = es.observation_id
+      `SELECT es.event_id, o.title, o.url, o.published_at, o.fetched_at FROM event_sources es JOIN observations o ON o.id = es.observation_id
        WHERE es.event_id IN (${marks}) ORDER BY es.created_at, es.rowid`,
       ids,
     );
     const impacts = (await this.all(`SELECT * FROM impacts WHERE event_id IN (${marks}) ORDER BY created_at`, ids)).map(toImpact);
     return ids.flatMap((id) => {
       const e = events.find((x) => x.id === id);
-      return e ? [{ ...e, items: titles.filter((t) => s(t.event_id) === id).slice(0, 3).map((t) => s(t.title)), impacts: impacts.filter((i) => i.eventId === id) }] : [];
+      const reports = titles.filter((t) => s(t.event_id) === id).slice(0, 3);
+      return e ? [{ ...e, items: reports.map((t) => s(t.title)), reports: reports.map((t) => ({ title: s(t.title), url: sOrNull(t.url), publishedAt: sOrNull(t.published_at), fetchedAt: s(t.fetched_at) })), impacts: impacts.filter((i) => i.eventId === id) }] : [];
     });
   }
 

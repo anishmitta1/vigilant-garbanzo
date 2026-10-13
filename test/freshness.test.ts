@@ -12,7 +12,7 @@ const NOW = "2026-10-07T16:00:00.000Z";
 const nowMs = Date.parse(NOW);
 const text = "On October 7, 2026, the committee approved the amendment. The prior compromise was reached on May 2.";
 const evidence: FreshnessEvidence = { url: "https://publisher.example/story", dates: [{ kind: "published", value: "2026-05-04T00:51:56.255Z", source: "JSON-LD datePublished" }], text };
-const review = (fresh: boolean | null, lookupUrl?: string): FreshnessDecision => ({ fresh, newFact: fresh ? "The committee approved an amendment" : "", rationale: "Article evidence", sources: [{ url: evidence.url!, quote: text }], ...(lookupUrl ? { lookupUrl } : {}) });
+const review = (fresh: boolean | null, lookupUrl?: string): FreshnessDecision => ({ fresh, firstPublicAt: "2026-10-07T10:00:00Z", originUrl: evidence.url!, newFact: fresh ? "The committee approved an amendment" : "", rationale: "Article evidence", sources: [{ url: evidence.url!, quote: text }], ...(lookupUrl ? { lookupUrl } : {}) });
 const html = (body = text) => `<html><head><script type="application/ld+json">${JSON.stringify({ "@type": "NewsArticle", datePublished: "2026-05-04T00:51:56.255Z", dateModified: "2026-10-07T12:00:00Z" })}</script></head><body><article><time datetime="2026-10-07T12:00:00Z">Updated October 7</time><p>${body}</p></article><aside><time datetime="2099-01-01">Related story</time></aside></body></html>`;
 const dated = (published?: string, modified?: string): FreshnessEvidence => ({
   url: "https://publisher.example/story",
@@ -233,13 +233,60 @@ describe("source-grounded novelty model", () => {
   const llm = { apiKey: "test", baseUrl: "https://llm.example", model: "test" };
   const response = (result: unknown) => (async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) } }] }))) as typeof fetch;
   it("accepts a quoted new disclosure and includes article, citations and event memory", async () => {
-    const fetchImpl = vi.fn(response({ new_information: true, first_public_at: "2026-10-07", origin_url: evidence.url, new_fact: "New amendment approved", rationale: "New vote", sources: [{ url: evidence.url, quote: text }] }));
+    const fetchImpl = vi.fn(response({ new_information: true, first_public_at: "2026-10-07", origin_url: evidence.url, new_fact: "New amendment approved", rationale: "New vote", sources: [{ url: evidence.url, quote: text }], disclosure_basis: "explicit_disclosure_date", disclosure_quote: text }));
     expect((await createLlmFreshness(llm, fetchImpl)("t", evidence, NOW, 48, { events: [] })).fresh).toBe(true);
     const payload = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
     const input = JSON.parse(payload.messages[1].content);
     expect(input.article).toMatchObject({ url: evidence.url, text });
     expect(input.known_events).toEqual([]);
-    expect(payload.max_tokens).toBe(800);
+    expect(payload.max_tokens).toBe(1200);
+  });
+  it("requires claim-specific provenance even when publication metadata matches", async () => {
+    const page = { ...dated("2026-10-07T10:00:00Z"), text: "AWS announced the community investment on Friday." };
+    const judge = createLlmFreshness(llm, response({ new_information: true, first_public_at: "2026-10-07T10:00:00Z", origin_url: page.url, new_fact: "AWS invests $1B", rationale: "Fresh page", sources: [{ url: page.url, quote: page.text }] }));
+    expect((await judge("AWS investment", page, NOW, 48)).fresh).toBeNull();
+  });
+  it("never dates a disclosure from modification metadata (AWS regression)", async () => {
+    const page = { ...dated(undefined, "2026-10-07T10:00:00Z"), text: "AWS announced the community investment on Friday." };
+    const judge = createLlmFreshness(llm, response({ new_information: true, first_public_at: "2026-10-07T10:00:00Z", origin_url: page.url, new_fact: "AWS invests $1B", rationale: "Fresh page", sources: [{ url: page.url, quote: page.text }], disclosure_basis: "primary_release", disclosure_quote: page.text }));
+    expect((await judge("AWS investment", page, NOW, 48)).fresh).toBeNull();
+  });
+  it("requires an explicit disclosure date, not just ambiguous relative wording", async () => {
+    const page = { ...dated("2026-10-07T10:00:00Z"), text: "AWS announced the community investment on Friday." };
+    const judge = createLlmFreshness(llm, response({ new_information: true, first_public_at: "2026-10-07T10:00:00Z", origin_url: page.url, new_fact: "AWS invests $1B", rationale: "Friday means today", sources: [{ url: page.url, quote: page.text }], disclosure_basis: "explicit_disclosure_date", disclosure_quote: page.text }));
+    expect((await judge("AWS investment", page, NOW, 48)).fresh).toBeNull();
+  });
+  it("uses the origin's actual publication time, not the model's guessed intraday time", async () => {
+    const page = { ...dated("2026-10-07T10:00:00Z"), text: "The company today announces a new one gigawatt project award." };
+    const judge = createLlmFreshness(llm, response({ new_information: true, first_public_at: "2026-10-07T13:25:00Z", origin_url: page.url, new_fact: "New one gigawatt award", rationale: "New release", sources: [{ url: page.url, quote: page.text }], disclosure_basis: "primary_release", disclosure_quote: page.text }));
+    expect(await judge("Award", page, NOW, 48)).toMatchObject({ fresh: true, firstPublicAt: "2026-10-07T10:00:00.000Z" });
+  });
+  it("checks publication-time precision at the age cutoff and fails closed on conflicting dates", async () => {
+    for (const dates of [[{ kind: "published" as const, value: "2026-10-05T10:00:00Z", source: "metadata" }], [{ kind: "published" as const, value: "2026-10-07T10:00:00Z", source: "metadata" }, { kind: "published" as const, value: "2026-09-01", source: "metadata" }]]) {
+      const page = { ...evidence, dates };
+      const judge = createLlmFreshness(llm, response({ new_information: true, first_public_at: dates[0]!.value.slice(0, 10) + "T15:00:00Z", origin_url: page.url, new_fact: "New release", rationale: "New", sources: [{ url: page.url, quote: text }], disclosure_basis: "primary_release", disclosure_quote: text }));
+      expect((await judge("t", page, NOW, 48)).fresh).not.toBe(true);
+    }
+  });
+  it("preserves date-only precision rather than inventing a publication time", async () => {
+    const page = dated("2026-10-07");
+    const judge = createLlmFreshness(llm, response({ new_information: true, first_public_at: "2026-10-07T10:00:00Z", origin_url: page.url, new_fact: "New amendment", rationale: "New release", sources: [{ url: page.url, quote: text }], disclosure_basis: "primary_release", disclosure_quote: text }));
+    expect(await judge("t", page, NOW, 48)).toMatchObject({ fresh: true, firstPublicAt: "2026-10-07" });
+  });
+  it("tolerates missing paragraph whitespace without accepting changed words", async () => {
+    const page = { ...dated("2026-10-07T10:00:00Z"), text: "The company announced a contract.The order is for 190MW." };
+    for (const quote of ["The company announced a contract. The order is for 190MW.", "The company announced a contract. The order is for 1600MW."]) {
+      const judge = createLlmFreshness(llm, response({ new_information: true, first_public_at: "2026-10-07", origin_url: page.url, new_fact: "New order", rationale: "New", sources: [{ url: page.url, quote }], disclosure_basis: "primary_release", disclosure_quote: quote }));
+      expect((await judge("t", page, NOW, 48)).fresh).toBe(quote.includes("1600") ? null : true);
+    }
+  });
+  it("forces inspection of a known earlier report instead of accepting the later report's date", async () => {
+    const page = dated("2026-10-07T13:25:00Z");
+    const earlier = "https://publisher.example/earlier";
+    const context = { events: [{ id: "e1", title: "Power backlog", firstSeenAt: "2026-10-07T10:16:00Z", items: ["Thin first report"], reports: [{ title: "Thin first report", url: earlier, publishedAt: "2026-10-07T10:00:00Z", fetchedAt: "2026-10-07T10:16:00Z" }] }] };
+    const judge = createLlmFreshness(llm, response({ new_information: true, first_public_at: "2026-10-07T13:25:00Z", origin_url: page.url, same_event: "e1", new_fact: "New contract", rationale: "Later detail", sources: [{ url: page.url, quote: text }], disclosure_basis: "original_reporting", disclosure_quote: text }));
+    expect(await judge("Contract", page, NOW, 48, context)).toMatchObject({ fresh: null, lookupUrl: earlier, sameEvent: "e1" });
+    expect(await judge("Contract", page, NOW, 48, { ...context, references: [{ url: earlier, dates: [], text: "", error: "Blocked" }] })).toMatchObject({ fresh: null });
   });
   it.each([
     { new_information: true, new_fact: "New", sources: [] },
@@ -301,7 +348,7 @@ async function setup(page: FreshnessEvidence, material = true) {
     impacts: material ? [{ tradeId: trade.id, pillarId: null, effect: "majorly_supports" as const, signalId: null, rationale: "Law advances" }] : [],
   }));
   const read = vi.fn(async () => page);
-  const delivery = vi.fn(async () => new Response("ok"));
+  const delivery = vi.fn<typeof fetch>(async () => new Response("ok"));
   const events = new EventIndex({ name: "test", embed: async () => new Float32Array([1, 0]) });
   const d = deps(store, { scorer: { name: "llm:test", judge }, freshness: { read, judge: async () => review(true) }, now: () => new Date(NOW), events,
     policy: { alertThreshold: 0.6, weakSignalFloor: 0.2, accumulationThreshold: 1, accumulationWindowHours: 72, maxAlertAgeHours: 48 },
@@ -357,6 +404,47 @@ describe("verified novelty before any push", () => {
     expect(s.read).toHaveBeenCalledTimes(1);
     expect(s.delivery).toHaveBeenCalledTimes(1);
   });
+  it("rescores only the verified milestone, not the old spending that made the headline pushable", async () => {
+    const s = await setup(dated("2026-10-07T10:00:00Z"));
+    const original = s.d.scorer.judge;
+    const judge = vi.fn(async (...args: Parameters<typeof original>) => {
+      const j = await original(...args);
+      return args[3]?.disclosure ? { ...j, material: false, consequence: 0.1, rationale: "Only an on-schedule milestone; no new investment", impacts: [] } : j;
+    });
+    s.d.scorer = { name: "llm:test", judge };
+    s.d.freshness = { read: s.read, judge: async () => ({ ...review(true), newFact: "GlobalFoundries completed an on-schedule topping-out milestone" }) };
+    expect((await processItems(s.d, s.source, [{ ...s.item, title: "GlobalFoundries €1.1B expansion" }])).alerts).toHaveLength(0);
+    expect(judge).toHaveBeenCalledTimes(2);
+    expect(judge.mock.calls[1]?.[0]).toMatchObject({ title: "GlobalFoundries completed an on-schedule topping-out milestone", summary: "", url: evidence.url, publishedAt: "2026-10-07T10:00:00Z" });
+    const j = (await s.store.listObservations())[0]?.judgment;
+    expect(j).toMatchObject({ material: false, rationale: expect.stringContaining("Only an on-schedule milestone") });
+    expect(s.delivery).not.toHaveBeenCalled();
+    expect(await s.store.impactsSince("1970-01-01T00:00:00Z")).toHaveLength(0);
+  });
+  it.each(["throw", "fallback"])("fails closed when verified-change scoring returns %s", async (failure) => {
+    const s = await setup(dated("2026-10-07T10:00:00Z"));
+    const original = s.d.scorer.judge;
+    s.d.scorer = { name: "llm:test", judge: async (...args) => {
+      const j = await original(...args);
+      if (!args[3]?.disclosure) return j;
+      if (failure === "throw") throw new Error("Model unavailable");
+      return { ...j, material: undefined, scorer: "heuristic", rationale: "LLM fallback" };
+    } };
+    expect((await processItems(s.d, s.source, [s.item])).alerts).toHaveLength(0);
+    expect((await s.store.listObservations())[0]?.judgment?.held).toBe("freshness_unverified");
+    expect(s.delivery).not.toHaveBeenCalled();
+    expect(await s.store.impactsSince("1970-01-01T00:00:00Z")).toHaveLength(0);
+  });
+  it("writes the alert from the verified purchase and origin, retaining the original observation", async () => {
+    const s = await setup(dated("2026-10-07T10:00:00Z"));
+    const fact = "AEP purchased 190MW under a Mainspring agreement for up to 1.6GW through 2034";
+    s.d.freshness = { read: s.read, judge: async () => ({ ...review(true), newFact: fact }) };
+    expect((await processItems(s.d, s.source, [{ ...s.item, title: "AEP orders 1.6GW" }])).alerts).toHaveLength(1);
+    const body = JSON.parse(String(s.delivery.mock.calls[0]?.[1]?.body));
+    expect(body).toMatchObject({ title: fact, url: evidence.url });
+    expect(body.body).toContain("publisher.example");
+    expect((await s.store.listObservations())[0]?.title).toBe("AEP orders 1.6GW");
+  });
   it("holds unreadable pages without delivery or fresh pillar evidence", async () => {
     const s = await setup({ url: null, dates: [], text: "", error: "Publisher HTTP 403" });
     expect((await processItems(s.d, s.source, [s.item])).alerts).toHaveLength(0);
@@ -395,5 +483,33 @@ describe("verified novelty before any push", () => {
       matches: [{ targetKey: "trade:test", name: "Crypto", strength: 1 }], rationale: "Same deal", event: { sameAs: priorId, title: "CLARITY deal", entities: [] }, impacts: [] }) };
     expect((await processItems(s.d, s.source, [{ ...s.item, externalId: "second", title: "A different outlet reports the Senate stablecoin compromise" }])).alerts).toHaveLength(0);
     expect(s.delivery).toHaveBeenCalledTimes(1);
+  });
+  it("lets a detailed report alert the unalerted event once, using novelty's claim identity", async () => {
+    const s = await setup(dated("2026-10-07T10:00:00Z"), false);
+    expect((await processItems(s.d, s.source, [s.item])).alerts).toHaveLength(0);
+    const priorId = (await s.store.eventIdForObservation((await s.store.listObservations())[0]!.id))!;
+    const original = s.d.scorer.judge;
+    const judge = vi.fn(async (...args: Parameters<typeof original>) => ({ ...await original(...args), material: true, consequence: 0.9, rationale: "New contract details", event: { sameAs: null, title: "New contract details", entities: [] } }));
+    s.d.scorer = { name: "llm:test", judge };
+    s.d.freshness = { read: s.read, judge: async () => ({ ...review(true), sameEvent: priorId }) };
+    const detailed = { ...s.item, externalId: "detailed", title: "Details reveal a newly awarded one gigawatt power contract", url: "https://publisher.example/detailed" };
+    const result = await processItems(s.d, s.source, [detailed]);
+    expect(result.alerts).toHaveLength(1);
+    expect(result.alerts[0]?.eventId).toBe(priorId);
+    expect(judge).toHaveBeenCalledTimes(2);
+    expect((await processItems(s.d, s.source, [{ ...detailed, externalId: "repeat", title: "Another publisher covers the power contract award", url: "https://publisher.example/repeat" }])).alerts).toHaveLength(0);
+    expect(judge).toHaveBeenCalledTimes(3);
+    expect(s.delivery).toHaveBeenCalledTimes(1);
+  });
+  it("allows an independently new change without reusing the old alerted event", async () => {
+    const s = await setup(dated("2026-10-07T10:00:00Z"));
+    await processItems(s.d, s.source, [s.item]);
+    const priorId = (await s.store.listAlerts(1))[0]!.eventId!;
+    const original = s.d.scorer.judge;
+    s.d.scorer = { name: "llm:test", judge: async (...args) => ({ ...await original(...args), event: { sameAs: priorId, title: "New amendment", entities: [] } }) };
+    s.d.freshness = { read: s.read, judge: async () => ({ ...review(true), newFact: "The committee approved a new amendment today", sameEvent: null }) };
+    const result = await processItems(s.d, s.source, [{ ...s.item, externalId: "amendment", title: "Committee approves a newly changed amendment", url: "https://publisher.example/amendment" }]);
+    expect(result.alerts).toHaveLength(1);
+    expect(result.alerts[0]?.eventId).not.toBe(priorId);
   });
 });
