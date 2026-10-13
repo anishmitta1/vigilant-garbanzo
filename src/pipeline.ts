@@ -12,7 +12,7 @@ import {
 import type { NtfyConfig } from "./config.js";
 import type { PillarEvidence, Store } from "./db.js";
 import { embedText, findCandidates, placeInEvent, type EventCandidate, type EventIndex, type Placement } from "./events.js";
-import { freshnessHold, publisherFeedEvidence, type FreshnessCheck } from "./freshness.js";
+import { freshnessHold, publisherFeedEvidence, type FreshnessCheck, type FreshnessDecision, type VerifiedDisclosure } from "./freshness.js";
 import { normalize, sameStory } from "./preprocess.js";
 import { heuristicScorer, namesWatched } from "./scoring/heuristic.js";
 import type { Triage } from "./scoring/triage.js";
@@ -137,7 +137,7 @@ export async function processItems(
     const scored = held
       ? await heuristicScorer.judge(observation, source, watchlist)
       : await scorer.judge(observation, source, watchlist, events ? { candidates, evidence } : undefined);
-    const judgment = { ...scored, ...(held ? { held } : {}), id: newId(), observationId: observation.id, createdAt: at };
+    let judgment = { ...scored, ...(held ? { held } : {}), id: newId(), observationId: observation.id, createdAt: at };
     if (held) {
       await store.insertJudgment(judgment, held === "stale" ? new Date(observation.publishedAt!).toISOString() : BASELINE_SIGNAL_AT);
       await place(judgment);
@@ -151,18 +151,44 @@ export async function processItems(
       ? decideEventAlert(judgment, judgment.impacts ?? []) !== null
       : decideAlert(judgment, priorWeakSums, policy) !== null;
     const hasDelivery = deps.webhookUrl || deps.ntfy || deps.barkUrl || deps.slackWebhookUrl;
+    let novelty: FreshnessDecision | undefined;
+    let disclosure: VerifiedDisclosure | undefined;
     const freshHeld = pushable && (deps.freshness || hasDelivery)
       ? await freshnessHold({ ...(deps.freshness ?? { read: async () => ({ url: null, dates: [], text: "", error: "Novelty checker not configured" }) }), record: (decision) => {
-          judgment.rationale += `\nNovelty check: ${decision.rationale}${decision.newFact ? ` New fact: ${decision.newFact}` : ""}${decision.firstPublicAt ? ` First public: ${decision.firstPublicAt}` : ""}${decision.sources.map((s) => ` [${s.url}: ${s.quote}]`).join("")}`;
+          novelty = decision;
           deps.freshness?.record?.(decision);
         } }, observation.url, observation.title, nowMs, policy.maxAlertAgeHours ?? 48, {
-          events: [...candidates].sort((a, b) => b.similarity - a.similarity).slice(0, 20).map((c) => ({ title: c.title, firstSeenAt: c.firstSeenAt, items: c.items.slice(0, 3) })),
+          events: [...candidates].sort((a, b) => b.similarity - a.similarity).slice(0, 20).map((c) => ({ id: c.id, title: c.title, firstSeenAt: c.firstSeenAt, items: c.items.slice(0, 3), reports: c.reports, alerted: c.alerted })),
           publisherFeed: publisherFeedEvidence(source, observation),
         })
       : undefined;
-    if (freshHeld) {
-      deps.log?.(`freshness: held ${freshHeld} ${observation.title}`);
-      judgment.held = freshHeld;
+    let verificationHold = freshHeld;
+    const sameEvent = novelty?.sameEvent;
+    if (sameEvent && candidates.some((c) => c.id === sameEvent && c.alerted)) {
+      verificationHold = "same_event";
+      judgment.event = { title: judgment.event?.title ?? observation.title, entities: judgment.event?.entities ?? [], sameAs: sameEvent };
+    }
+    if (!verificationHold && novelty?.fresh === true) {
+      if (!novelty.newFact.trim() || !novelty.originUrl || !novelty.firstPublicAt || !Number.isFinite(Date.parse(novelty.firstPublicAt))) verificationHold = "freshness_unverified";
+      else {
+        disclosure = { newFact: novelty.newFact, originUrl: novelty.originUrl, firstPublicAt: novelty.firstPublicAt, ...(novelty.sameEvent !== undefined ? { sameEvent: novelty.sameEvent } : {}) };
+        const claim = { ...observation, title: disclosure.newFact, summary: "", url: disclosure.originUrl, publishedAt: disclosure.firstPublicAt };
+        try {
+          const refined = await scorer.judge(claim, source, watchlist, { candidates, evidence, disclosure });
+          judgment = { ...refined, id: judgment.id, observationId: observation.id, createdAt: at };
+          if (disclosure.sameEvent !== undefined) judgment.event = { title: refined.event?.title ?? disclosure.newFact, entities: refined.event?.entities ?? [], sameAs: disclosure.sameEvent };
+          if (scorer.name.startsWith("llm:") && refined.material === undefined) verificationHold = "freshness_unverified";
+        } catch (err) {
+          judgment.rationale = `Verified-change scoring failed: ${errorMessage(err)}`;
+          verificationHold = "freshness_unverified";
+        }
+      }
+    }
+    if (novelty) judgment.rationale += `\nNovelty check: ${novelty.rationale}${novelty.newFact ? ` New fact: ${novelty.newFact}` : ""}${novelty.firstPublicAt ? ` First public: ${novelty.firstPublicAt}` : ""}${novelty.originUrl ? ` Origin: ${novelty.originUrl}` : ""}${novelty.disclosureBasis ? ` Basis: ${novelty.disclosureBasis}` : ""}${novelty.disclosureQuote ? ` Disclosure evidence: ${novelty.disclosureQuote}` : ""}${novelty.sources.map((s) => ` [${s.url}: ${s.quote}]`).join("")}`;
+    if (verificationHold) {
+      deps.log?.(`freshness: held ${verificationHold} ${observation.title}`);
+      judgment.held = verificationHold;
+      judgment.material = false;
       judgment.impacts = [];
       await store.insertJudgment(judgment, BASELINE_SIGNAL_AT);
       await place(judgment);
@@ -199,9 +225,9 @@ export async function processItems(
       delivered: false,
       deliveryError: null,
     }, at);
-    deps.log?.(`ALERT [${decision.reason} ${decision.score}] ${observation.title}`);
+    deps.log?.(`ALERT [${decision.reason} ${decision.score}] ${disclosure?.newFact ?? observation.title}`);
     const moved = (placed?.added ?? []).filter((i) => isMajor(i.effect) && i.pillarId).map((i) => pillarNames.get(i.pillarId!)!);
-    const payload = buildPayload(alert, observation, judgment, source, moved.filter(Boolean));
+    const payload = buildPayload(alert, observation, judgment, source, moved.filter(Boolean), disclosure);
     const channels: (() => Promise<void>)[] = [];
     const { webhookUrl, ntfy, barkUrl, slackWebhookUrl } = deps;
     if (webhookUrl) channels.push(() => deliverWebhook(webhookUrl, payload, deps.fetch));

@@ -1,4 +1,5 @@
 import type { NtfyConfig } from "./config.js";
+import type { VerifiedDisclosure } from "./freshness.js";
 import { isMajor, type ImpactDraft, type Judgment, type Observation, type Source, type TargetMatch } from "./types.js";
 import type { Alert, AlertReason } from "./types.js";
 
@@ -73,17 +74,23 @@ export interface AlertPayload {
   source: { id: string; name: string; type: string };
   /** Pillars this item moved majorly, e.g. ["Big buyers pay for firm power."]. */
   pillars?: string[];
+  disclosure?: VerifiedDisclosure;
 }
 
-export function buildPayload(alert: Alert, observation: Observation, judgment: Judgment, source: Source, pillars: string[] = []): AlertPayload {
+export function buildPayload(alert: Alert, observation: Observation, judgment: Judgment, source: Source, pillars: string[] = [], disclosure?: VerifiedDisclosure): AlertPayload {
   return {
     type: "mimir.alert",
     alert,
-    observation,
+    observation: disclosure ? { ...observation, title: disclosure.newFact, summary: "", publishedAt: disclosure.firstPublicAt, url: disclosure.originUrl } : observation,
     judgment,
     source: { id: source.id, name: source.name, type: source.type },
     ...(pillars.length > 0 ? { pillars } : {}),
+    ...(disclosure ? { disclosure } : {}),
   };
+}
+
+function originName(payload: AlertPayload): string {
+  return payload.disclosure ? new URL(payload.disclosure.originUrl).hostname.replace(/^www\./, "") : payload.source.name;
 }
 
 const ARROWS = { strengthens: "↑ strengthening", weakens: "↓ weakening", mixed: "↕ mixed" } as const;
@@ -111,6 +118,7 @@ const etClock = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York",
 
 /** e.g. "3:57 PM ET (9m ago)" */
 export function publishedLine(publishedAt: string | null, now: Date = new Date()): string | null {
+  if (publishedAt && /^\d{4}-\d{2}-\d{2}$/.test(publishedAt)) return `Published ${publishedAt} (time unknown)`;
   const at = publishedAt ? new Date(publishedAt) : null;
   if (!at || Number.isNaN(at.getTime())) return null;
   const mins = Math.max(0, Math.round((now.getTime() - at.getTime()) / 60_000));
@@ -136,10 +144,10 @@ export function ntfyPriority(alert: Pick<Alert, "reason" | "score">): number {
 
 /** Push an alert to a phone via ntfy (https://ntfy.sh) using its JSON publish API. */
 export async function deliverNtfy(ntfy: NtfyConfig, payload: AlertPayload, fetchImpl: typeof fetch = fetch): Promise<void> {
-  const { alert, observation, judgment, source } = payload;
+  const { alert, observation, judgment } = payload;
   const targets = describeTargets(judgment.matches);
   const headline = alert.reason === "direct" ? "Direct" : "Accumulated weak signals";
-  const message = [`${headline} (${alert.score}) · ${judgment.eventType} · ${targets}`, judgment.rationale, `via ${source.name}`]
+  const message = [`${headline} (${alert.score}) · ${judgment.eventType} · ${targets}`, judgment.rationale, `via ${originName(payload)}`]
     .filter(Boolean)
     .join("\n");
   const res = await fetchImpl(ntfy.url.replace(/\/$/, ""), {
@@ -174,7 +182,7 @@ export async function deliverBark(
   now: Date = new Date(),
 ): Promise<void> {
   const { alert, observation, judgment, source, pillars } = payload;
-  const { title, outlet } = splitOutlet(observation.title, source);
+  const { title, outlet } = payload.disclosure ? { title: observation.title, outlet: originName(payload) } : splitOutlet(observation.title, source);
   const footer = [outlet, publishedLine(observation.publishedAt, now)].filter(Boolean).join(" · ");
   const res = await fetchImpl(barkUrl.replace(/\/+$/, ""), {
     method: "POST",
@@ -196,14 +204,14 @@ const slackEscape = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g
 
 /** Post an alert to a Slack incoming webhook (https://api.slack.com/messaging/webhooks). */
 export async function deliverSlack(webhookUrl: string, payload: AlertPayload, fetchImpl: typeof fetch = fetch): Promise<void> {
-  const { alert, observation, judgment, source } = payload;
+  const { alert, observation, judgment } = payload;
   const title = slackEscape(observation.title);
   const headline = alert.reason === "direct" ? "Direct" : "Accumulated weak signals";
   const text = [
     `*${observation.url ? `<${observation.url}|${title}>` : title}*`,
     `${alert.reason === "direct" && alert.score >= 0.85 ? ":rotating_light: " : ""}${headline} (${alert.score}) · ${slackEscape(describeTargets(judgment.matches))}`,
     slackEscape(judgment.rationale),
-    `_via ${slackEscape(source.name)}_`,
+    `_via ${slackEscape(originName(payload))}_`,
   ]
     .filter(Boolean)
     .join("\n");

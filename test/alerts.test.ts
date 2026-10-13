@@ -9,6 +9,9 @@ const power: TargetMatch = { targetKey: "trade:2", name: "Power & nuclear demand
 const theme: TargetMatch = { targetKey: "theme:1", name: "AI infrastructure", strength: 1 };
 
 describe("alert text", () => {
+  it("does not invent an intraday disclosure time for date-only sources", () => {
+    expect(publishedLine("2026-10-08", new Date("2026-10-08T11:00:00Z"))).toBe("Published 2026-10-08 (time unknown)");
+  });
   it("lists trades with direction and hides themes when a trade matched", () => {
     expect(directionLine([ai, theme, power])).toBe("▲ AI infra buildout   ▼ Power & nuclear demand");
     expect(directionLine([theme])).toBe("• AI infrastructure");

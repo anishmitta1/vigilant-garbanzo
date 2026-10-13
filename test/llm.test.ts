@@ -25,6 +25,17 @@ const completion = (content: unknown) =>
   new Response(JSON.stringify({ choices: [{ message: { content: typeof content === "string" ? content : JSON.stringify(content) } }] }));
 
 describe("llm scorer", () => {
+  it("uses only a verified change for final scoring, excluding the original headline and summary", async () => {
+    const { calls, fetchImpl } = fakeLlm(() => completion({ event_type: "general", consequence: 0.1, urgency: 0.1, matched_targets: [], material: false, rationale: "Only an on-schedule milestone", impacts: [] }));
+    const disclosure = { newFact: "GlobalFoundries completed an on-schedule construction milestone", originUrl: "https://gf.example/release", firstPublicAt: "2026-10-09T13:00:00Z" };
+    await createLlmScorer(llm, fetchImpl).judge({ ...obs, title: "GlobalFoundries €1.1B investment", summary: "Capacity will exceed one million wafers" }, source, watchlist, { disclosure });
+    const payload = JSON.parse(String(calls[0]?.init.body));
+    const input = JSON.parse(payload.messages[1].content);
+    expect(input.item).toMatchObject({ title: disclosure.newFact, summary: "", published_at: disclosure.firstPublicAt });
+    expect(input.verified_disclosure).toEqual(disclosure);
+    expect(JSON.stringify(input)).not.toContain("€1.1B");
+    expect(JSON.stringify(input)).not.toContain("one million wafers");
+  });
   it("sends an OpenAI-compatible request and maps the response", async () => {
     const { calls, fetchImpl } = fakeLlm(() =>
       completion({

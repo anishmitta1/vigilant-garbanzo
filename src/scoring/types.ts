@@ -1,5 +1,6 @@
 import type { PillarEvidence } from "../db.js";
 import type { EventCandidate } from "../events.js";
+import type { VerifiedDisclosure } from "../freshness.js";
 import type { Judgment, Observation, Source, Watchlist } from "../types.js";
 
 export type JudgmentDraft = Omit<Judgment, "id" | "observationId" | "createdAt">;
@@ -9,6 +10,7 @@ export interface JudgeContext {
   candidates?: EventCandidate[];
   /** Newest first. */
   evidence?: PillarEvidence[];
+  disclosure?: VerifiedDisclosure;
 }
 
 export interface Scorer {
